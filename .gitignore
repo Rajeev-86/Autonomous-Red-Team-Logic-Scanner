@@ -1,0 +1,61 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre
+typecheck/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+pythonenv*/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing and coverage
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+
+# Logs and runtime artifacts
+*.log
+logs/
+*.pid
+
+# Local data stores and generated files
+*.db
+*.sqlite
+*.sqlite3
+chroma/
+data/
+state/
+*.jsonl
+
+# Playwright / browser automation
+playwright/.cache/
+test-results/
+playwright-report/
+
+# Node.js dependencies
+node_modules/
+.npm/
+.pnpm-store/
+
+# OS files
+.DS_Store
+Thumbs.db

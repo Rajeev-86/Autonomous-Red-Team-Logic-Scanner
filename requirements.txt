@@ -1,0 +1,21 @@
+# ── LLM SDKs ──────────────────────────────────────────────────────────────────
+google-genai>=1.0.0          # Gemini 2.5 Flash (Explorer & Evaluator)
+groq>=0.28.0                  # Groq / Llama-4 Scout (Mutator — high-speed)
+
+# ── MCP Client ────────────────────────────────────────────────────────────────
+mcp>=1.9.0                    # Anthropic MCP Python client (connects to Playwright MCP)
+
+# ── Semantic Memory ───────────────────────────────────────────────────────────
+chromadb>=0.6.0               # Local vector DB for API payload embeddings
+
+# ── State Graph ───────────────────────────────────────────────────────────────
+networkx>=3.3                 # Graph data structure for application state
+aiosqlite>=0.20.0             # Async SQLite for graph persistence
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0          # .env file loading
+aiohttp>=3.9.0                # Async HTTP (health checks)
+tenacity>=8.3.0               # Exponential backoff on LLM rate limits
+pydantic>=2.7.0               # Typed models for findings / payloads
+rich>=13.7.0                  # Terminal logging & progress bars
+hashlib                       # PII hashing (stdlib)
