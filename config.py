@@ -22,8 +22,8 @@ class Config:
 
     # ── Model Selection ───────────────────────────────────────────────────────
     # Explorer & Evaluator — high-context DOM reasoning
-    EXPLORER_MODEL:  str = "gemini-2.5-flash"
-    EVALUATOR_MODEL: str = "gemini-2.5-flash"
+    EXPLORER_MODEL:  str = "gemini-3.5-flash"
+    EVALUATOR_MODEL: str = "gemini-3.5-flash"
     # Mutator — high-throughput payload generation via Groq free tier
     MUTATOR_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"   # or "qwen/qwen3-32b"
 
