@@ -25,7 +25,7 @@ class Config:
     EXPLORER_MODEL:  str = "gemini-2.5-flash"
     EVALUATOR_MODEL: str = "gemini-2.5-flash"
     # Mutator — high-throughput payload generation via Groq free tier
-    MUTATOR_MODEL: str = "meta-llama/llama-4-scout-preview"   # or "qwen/qwen3-32b"
+    MUTATOR_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"   # or "qwen/qwen3-32b"
 
     # ── Semantic Memory ───────────────────────────────────────────────────────
     CHROMA_PERSIST_DIR: str = "./data/chroma_db"
