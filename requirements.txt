@@ -18,4 +18,3 @@ aiohttp>=3.9.0                # Async HTTP (health checks)
 tenacity>=8.3.0               # Exponential backoff on LLM rate limits
 pydantic>=2.7.0               # Typed models for findings / payloads
 rich>=13.7.0                  # Terminal logging & progress bars
-hashlib                       # PII hashing (stdlib)
