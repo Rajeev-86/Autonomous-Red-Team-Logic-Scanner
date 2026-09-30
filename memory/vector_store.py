@@ -217,7 +217,7 @@ class VectorStore:
         id_keys = {"id", "user_id", "userid", "account_id", "order_id",
                    "product_id", "resource_id", "owner_id"}
         return any(
-            isinstance(v, int) and k.split(".")[-1].lower() in id_keys
+            isinstance(v, int) and _matches(k, id_keys)
             for k, v in _flatten(body).items()
         )
 
@@ -235,13 +235,13 @@ class VectorStore:
     def _has_price_field(body: dict) -> bool:
         price_keys = {"price", "total", "amount", "quantity", "qty",
                       "discount", "cost", "subtotal"}
-        return any(k.split(".")[-1].lower() in price_keys for k in _flatten(body))
+        return any(_matches(k, price_keys) for k in _flatten(body))
 
     @staticmethod
     def _has_role_field(body: dict) -> bool:
         role_keys = {"role", "roles", "permission", "permissions",
                      "access_level", "is_admin", "admin", "privilege"}
-        return any(k.split(".")[-1].lower() in role_keys for k in _flatten(body))
+        return any(_matches(k, role_keys) for k in _flatten(body))
 
 
 # ── Utility ───────────────────────────────────────────────────────────────────
@@ -249,13 +249,13 @@ class VectorStore:
 def _flatten(obj: Any, prefix: str = "") -> dict:
     """
     Recursively flatten a nested dict/list into {dotted.path: value} pairs.
- 
+
     List items get an index suffix, e.g. "items[0].price", so that fields
     nested inside cart/line-item arrays — the normal shape of a checkout
-    payload — are visible to the has_* detectors above. Detectors match on
-    the LAST path segment (k.split(".")[-1]), so "items[0].price" and
-    "cart.price" both correctly register as a price field, not just a
-    bare top-level "price" key.
+    payload — are visible to the has_* detectors above. Detectors match via
+    _matches(), which strips the trailing [i] and singularizes before
+    comparing, so "items[0].price", "cart.price" and "prices[0]" (a bare
+    scalar array) all correctly register as a price field.
     """
     result: dict = {}
     if isinstance(obj, dict):
@@ -269,3 +269,38 @@ def _flatten(obj: Any, prefix: str = "") -> dict:
     else:
         result[prefix] = obj
     return result
+
+
+def _field_name(key: str) -> str:
+    """
+    Extract the matchable field name from a flattened key, stripping any
+    trailing array-index suffix, e.g. "items[0].price" -> "price",
+    "user_ids[2]" -> "user_ids".
+    """
+    return re.sub(r"\[\d+\]$", "", key.split(".")[-1])
+
+
+def _pluralized_forms(word: str) -> set[str]:
+    """
+    All plausible spellings (singular + plural) of a known pattern word.
+
+    We deliberately only ever pluralize FROM the small, fixed keyword
+    list — never try to singularize an arbitrary observed field name.
+    Singularizing an unknown word is ambiguous and lossy: is "status"
+    already singular, or a stripped plural of "statu"? There's no way to
+    tell from the string alone, and an earlier version of this function
+    that tried mangled "status" -> "statu". Pluralizing a *known* word
+    has no such ambiguity — we control the input.
+    """
+    forms = {word, f"{word}s"}
+    if len(word) > 1 and word.endswith("y") and word[-2] not in "aeiou":
+        forms.add(word[:-1] + "ies")
+    if word.endswith(("s", "x", "z", "ch", "sh")):
+        forms.add(word + "es")
+    return forms
+
+
+def _matches(key: str, patterns: set[str]) -> bool:
+    """True if key's field name matches any pattern, singular or plural."""
+    name = _field_name(key).lower()
+    return any(name in _pluralized_forms(p) for p in patterns)
