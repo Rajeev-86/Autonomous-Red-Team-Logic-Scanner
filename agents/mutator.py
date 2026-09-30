@@ -140,7 +140,8 @@ def _rule_based_mutations(
 
 def _looks_like_id_key(key: str) -> bool:
     id_patterns = {"id", "user_id", "userid", "account_id", "order_id",
-                   "resource_id", "owner_id", "profile_id", "customer_id"}
+                   "resource_id", "owner_id", "profile_id", "customer_id",
+                   "product_id", "item_id", "line_item_id"}
     return key.split(".")[-1].lower() in id_patterns
 
 
