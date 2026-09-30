@@ -164,24 +164,61 @@ def _is_uuid(val: str) -> bool:
         return False
 
 
-def _flatten(d: dict, prefix: str = "") -> dict:
-    result = {}
-    for k, v in d.items():
-        full_key = f"{prefix}.{k}" if prefix else k
-        if isinstance(v, dict):
+def _flatten(obj: Any, prefix: str = "") -> dict:
+    """
+    Recursively flatten a nested dict/list into {dotted.path: value} pairs.
+ 
+    List items get an index suffix, e.g. "items[0].price", so cart/line-item
+    arrays are visible to the mutation rules below — without this, a
+    payload like {"items": [{"price": 9.99}]} never produced a
+    PRICE_MANIP hypothesis at all.
+    """
+    result: dict = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            full_key = f"{prefix}.{k}" if prefix else k
             result.update(_flatten(v, full_key))
-        else:
-            result[full_key] = v
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            full_key = f"{prefix}[{i}]"
+            result.update(_flatten(item, full_key))
+    else:
+        result[prefix] = obj
     return result
 
+_PATH_SEGMENT_RE = re.compile(r"^([^\[\]]+)(?:\[(\d+)\])?$")
 
 def _set_nested(d: dict, dotted_key: str, value: Any) -> None:
-    """Set a value in a nested dict using dot notation."""
-    keys = dotted_key.split(".")
-    for key in keys[:-1]:
-        d = d.setdefault(key, {})
-    d[keys[-1]] = value
-
+    """
+    Set a value inside a nested dict/list structure using a dotted path
+    with optional [i] array-index suffixes, e.g. "items[0].price" or
+    "user.address.zip". Mirrors the path shape _flatten() produces above,
+    so any key it reports can be written straight back into the payload.
+    """
+    segments = dotted_key.split(".")
+    container = d
+ 
+    for i, seg in enumerate(segments):
+        m = _PATH_SEGMENT_RE.match(seg)
+        name, idx = (seg, None) if not m else (m.group(1), m.group(2))
+        idx = int(idx) if idx is not None else None
+        is_last = i == len(segments) - 1
+ 
+        if idx is None:
+            # Plain dict key
+            if is_last:
+                container[name] = value
+            else:
+                container = container.setdefault(name, {})
+        else:
+            # Array-indexed key, e.g. items[0]
+            lst = container.setdefault(name, [])
+            while len(lst) <= idx:
+                lst.append({})
+            if is_last:
+                lst[idx] = value
+            else:
+                container = lst[idx]
 
 # ── Agent class ───────────────────────────────────────────────────────────────
 
