@@ -152,7 +152,7 @@ class PlaywrightMCPClient:
             Confirmation dict from the MCP server.
         """
         return await self._call("browser_route_fulfil", {
-            "url":         url_pattern,
+            "pattern":     url_pattern,
             "method":      method,
             "body":        json.dumps(modified_body),
             "contentType": "application/json",
