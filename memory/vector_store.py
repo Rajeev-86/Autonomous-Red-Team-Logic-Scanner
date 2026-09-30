@@ -246,13 +246,26 @@ class VectorStore:
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 
-def _flatten(d: dict, prefix: str = "") -> dict:
-    """Recursively flatten a nested dict for key-level inspection."""
-    result = {}
-    for k, v in d.items():
-        full_key = f"{prefix}.{k}" if prefix else k
-        if isinstance(v, dict):
+def _flatten(obj: Any, prefix: str = "") -> dict:
+    """
+    Recursively flatten a nested dict/list into {dotted.path: value} pairs.
+ 
+    List items get an index suffix, e.g. "items[0].price", so that fields
+    nested inside cart/line-item arrays — the normal shape of a checkout
+    payload — are visible to the has_* detectors above. Detectors match on
+    the LAST path segment (k.split(".")[-1]), so "items[0].price" and
+    "cart.price" both correctly register as a price field, not just a
+    bare top-level "price" key.
+    """
+    result: dict = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            full_key = f"{prefix}.{k}" if prefix else k
             result.update(_flatten(v, full_key))
-        else:
-            result[full_key] = v
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            full_key = f"{prefix}[{i}]"
+            result.update(_flatten(item, full_key))
+    else:
+        result[prefix] = obj
     return result
