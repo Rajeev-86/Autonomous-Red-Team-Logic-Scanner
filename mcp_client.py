@@ -198,6 +198,11 @@ class PlaywrightMCPClient:
             return {}
 
         raw = result.content[0]
+
+        if getattr(result, "isError", False):
+            logger.error("MCP tool error: %s(%s) → %s", tool_name, args, text)
+            raise RuntimeError(f"MCP tool '{tool_name}' returned an error: {text}")
+        
         text = getattr(raw, "text", None) or str(raw)
 
         try:
