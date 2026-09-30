@@ -214,7 +214,7 @@ class VectorStore:
 
     @staticmethod
     def _has_integer_id(body: dict) -> bool:
-        id_keys = {"id", "user_id", "userId", "account_id", "order_id",
+        id_keys = {"id", "user_id", "userid", "account_id", "order_id",
                    "product_id", "resource_id", "owner_id"}
         return any(
             isinstance(v, int) and k.split(".")[-1].lower() in id_keys
