@@ -37,7 +37,9 @@ class Config:
     # ── Playwright MCP Server ─────────────────────────────────────────────────
     MCP_COMMAND: str       = "npx"
     MCP_ARGS: List[str]    = field(default_factory=lambda: [
-        "@playwright/mcp@latest", "--headless", "--no-sandbox"
+    "@playwright/mcp@latest", "--headless", "--no-sandbox",
+    "--caps=network",   # exposes browser_route / browser_unroute — required
+                        # for payload injection; not enabled by default
     ])
 
     # ── Scanner Behaviour ─────────────────────────────────────────────────────
