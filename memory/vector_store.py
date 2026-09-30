@@ -217,7 +217,7 @@ class VectorStore:
         id_keys = {"id", "user_id", "userId", "account_id", "order_id",
                    "product_id", "resource_id", "owner_id"}
         return any(
-            isinstance(v, int) and k.lower() in id_keys
+            isinstance(v, int) and k.split(".")[-1].lower() in id_keys
             for k, v in _flatten(body).items()
         )
 
@@ -235,13 +235,13 @@ class VectorStore:
     def _has_price_field(body: dict) -> bool:
         price_keys = {"price", "total", "amount", "quantity", "qty",
                       "discount", "cost", "subtotal"}
-        return any(k.lower() in price_keys for k in _flatten(body))
+        return any(k.split(".")[-1].lower() in price_keys for k in _flatten(body))
 
     @staticmethod
     def _has_role_field(body: dict) -> bool:
         role_keys = {"role", "roles", "permission", "permissions",
                      "access_level", "is_admin", "admin", "privilege"}
-        return any(k.lower() in role_keys for k in _flatten(body))
+        return any(k.split(".")[-1].lower() in role_keys for k in _flatten(body))
 
 
 # ── Utility ───────────────────────────────────────────────────────────────────
