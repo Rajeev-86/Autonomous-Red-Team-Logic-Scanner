@@ -92,7 +92,7 @@ class PlaywrightMCPClient:
         """Type text into an input field. Optionally press Enter to submit."""
         result = await self._call("browser_type", {"ref": ref, "text": text})
         if submit:
-            await self._call("browser_press", {"key": "Enter"})
+            await self._call("browser_press_key", {"key": "Enter"})
         return result
 
     async def select_option(self, ref: str, value: str) -> dict:
@@ -101,15 +101,13 @@ class PlaywrightMCPClient:
 
     async def get_current_url(self) -> str:
         """Return the URL currently loaded in the browser."""
-        result = await self._call(
-            "browser_evaluate", {"script": "window.location.href"}
-        )
-        return result.get("result", "") if isinstance(result, dict) else str(result)
+        result = await self.evaluate_js("window.location.href")
+        return result if isinstance(result, str) else str(result or "")
 
     async def wait_for_load(self, timeout_ms: int = 3000) -> None:
-        """Wait for the page network to go idle."""
-        await self._call("browser_wait_for_load_state",
-                         {"state": "networkidle", "timeout": timeout_ms})
+        """Approximate network idle with a capped fixed-time wait."""
+        seconds = max(0.1, min(10, timeout_ms / 1000))
+        await self._call("browser_wait_for", {"time": seconds})
 
     # ── Network Interception ──────────────────────────────────────────────────
 
@@ -132,9 +130,8 @@ class PlaywrightMCPClient:
         method: str = "POST",
     ) -> dict:
         """
-        Register a one-shot route intercept on *url_pattern*.
-        The next matching request will have its body replaced with
-        *modified_body* before it reaches the backend.
+        Register a route mock on *url_pattern*. Matching requests get the
+        response body replaced with *modified_body*.
 
         This is the core primitive for IDOR and business-logic testing —
         equivalent to Burp Suite's Repeater tab, but automated.
@@ -146,22 +143,22 @@ class PlaywrightMCPClient:
             url_pattern: Glob or regex pattern matching the endpoint
                          (e.g. '**/api/v1/profile*').
             modified_body: The malicious payload dict to substitute.
-            method: HTTP method filter (default POST).
+                method: Kept for the caller's/report's benefit only. The browser
+                    route tool mocks every request matching the pattern.
 
         Returns:
-            Confirmation dict from the MCP server.
+            Confirmation dict or text from the MCP server.
         """
-        return await self._call("browser_route_fulfil", {
+        return await self._call("browser_route", {
             "pattern":     url_pattern,
-            "method":      method,
             "body":        json.dumps(modified_body),
             "contentType": "application/json",
             "status":      200,          # Let it through — backend decides fate
         })
 
     async def clear_routes(self) -> None:
-        """Remove all active route intercepts."""
-        await self._call("browser_route_clear", {})
+        """Remove all active route mocks."""
+        await self._call("browser_unroute", {})
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 
@@ -198,12 +195,11 @@ class PlaywrightMCPClient:
             return {}
 
         raw = result.content[0]
+        text = getattr(raw, "text", None) or str(raw)
 
         if getattr(result, "isError", False):
             logger.error("MCP tool error: %s(%s) → %s", tool_name, args, text)
             raise RuntimeError(f"MCP tool '{tool_name}' returned an error: {text}")
-        
-        text = getattr(raw, "text", None) or str(raw)
 
         try:
             return json.loads(text)
