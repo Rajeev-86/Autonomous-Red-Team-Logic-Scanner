@@ -162,9 +162,18 @@ class PlaywrightMCPClient:
 
     # ── Utilities ─────────────────────────────────────────────────────────────
 
-    async def evaluate_js(self, script: str) -> Any:
-        """Execute arbitrary JavaScript in page context and return the result."""
-        result = await self._call("browser_evaluate", {"script": script})
+    async def evaluate_js(self, expression: str) -> Any:
+        """
+        Execute a single JS expression in page context and return the result.
+
+        browser_evaluate's real parameter is "function" (not "script"), and
+        it must be a JS function expression — e.g. "() => 1 + 1", not a bare
+        "1 + 1". We do that wrapping here so callers can keep passing plain
+        expressions.
+        """
+        result = await self._call(
+            "browser_evaluate", {"function": f"() => {expression}"}
+        )
         return result.get("result") if isinstance(result, dict) else result
 
     async def get_cookies(self) -> list[dict]:
