@@ -37,10 +37,10 @@ fi
 # ── Python environment ────────────────────────────────────────────────────────
 
 info "Creating Python virtual environment…"
-python3 -m venv .venv
+python3 -m venv venv
 
 info "Activating venv and installing Python dependencies…"
-source .venv/bin/activate
+source venv/bin/activate
 pip install --upgrade pip --quiet
 pip install -r requirements.txt --quiet
 
@@ -87,7 +87,7 @@ echo "  1. Edit .env with your Gemini + Groq API keys."
 echo "  2. Start an authorised test target:"
 echo "       docker run -p 3000:3000 bkimminich/juice-shop"
 echo "  3. Activate venv and run:"
-echo "       source .venv/bin/activate"
+echo "       source venv/bin/activate"
 echo "       python main.py --target http://localhost:3000"
 echo ""
 warn "⚠️  Only scan systems you OWN or have WRITTEN PERMISSION to test."

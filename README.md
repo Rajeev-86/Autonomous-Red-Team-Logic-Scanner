@@ -101,7 +101,7 @@ docker run -p 8081:80 vulnerables/web-dvwa
 
 ### 4. Run
 ```bash
-source .venv/bin/activate
+source venv/bin/activate
 python main.py --target http://localhost:3000
 ```
 
