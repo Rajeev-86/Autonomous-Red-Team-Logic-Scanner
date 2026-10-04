@@ -146,5 +146,17 @@ class BaseAgent(ABC):
                 except json.JSONDecodeError:
                     continue
 
-        logger.warning("Could not extract JSON from LLM response: %s…", text[:200])
+        refusal_markers = (
+            "i cannot assist", "i can't assist", "i am not able to",
+            "i'm not able to", "i won't be able to", "i'm unable to",
+        )
+        if any(m in text.lower() for m in refusal_markers):
+            logger.warning(
+                "LLM appears to have REFUSED the request (safety/policy "
+                "response) rather than returned malformed JSON — this is "
+                "not the same as the model deciding there's nothing left "
+                "to do: %s…", text[:200]
+            )
+        else:
+            logger.warning("Could not extract JSON from LLM response: %s…", text[:200])
         return None

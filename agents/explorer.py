@@ -30,7 +30,8 @@ logger = logging.getLogger("Explorer")
 # ── Prompt templates ──────────────────────────────────────────────────────────
 
 _SUMMARISE_PAGE_PROMPT = """
-You are a security-focused web analyst.
+You are a QA engineer cataloguing the functionality of a web application
+you have permission to test.
 Below is the accessibility tree snapshot of a web page.
 Respond with ONLY a JSON object (no markdown):
 
@@ -43,10 +44,10 @@ Respond with ONLY a JSON object (no markdown):
       "type":   "button|link|input|select|form",
       "label":  "<human-readable label>",
       "value":  "<current value if input, else null>",
-      "priority": <1-5, where 5 = most interesting for security testing>
+      "priority": <1-5, where 5 = most interesting to test next>
     }}
   ],
-  "security_notes": "<any noteworthy access-control hints visible on this page>"
+  "notes": "<anything noteworthy about this page's functionality>"
 }}
 
 Accessibility tree:
@@ -54,7 +55,8 @@ Accessibility tree:
 """
 
 _PICK_NEXT_ACTION_PROMPT = """
-You are navigating a web application to build a comprehensive security map.
+You are cataloguing the functionality of a web application you have
+permission to test, by clicking through it like a QA engineer would.
 You have already visited these URLs:
 {visited_urls}
 
@@ -62,7 +64,8 @@ Current page summary: {page_summary}
 Available interactive elements:
 {elements}
 
-Pick the SINGLE most useful next action for exploring new functionality.
+Pick the SINGLE most useful next action to cover functionality you
+haven't explored yet.
 Respond with ONLY a JSON object:
 {{
   "action":    "click|type|navigate|done",
@@ -71,7 +74,8 @@ Respond with ONLY a JSON object:
   "url":       "<URL to navigate to, if action is navigate>",
   "reasoning": "<one-sentence justification>"
 }}
-Return {{"action": "done"}} when exploration is exhausted or step limit reached.
+Return {{"action": "done"}} when you've covered the available functionality
+or reached the step limit.
 """
 
 

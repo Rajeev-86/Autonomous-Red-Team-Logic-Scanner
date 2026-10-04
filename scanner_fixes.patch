@@ -1,0 +1,558 @@
+diff --git a/agents/base_agent.py b/agents/base_agent.py
+index 1e73c6c..7c24e1e 100644
+--- a/agents/base_agent.py
++++ b/agents/base_agent.py
+@@ -146,5 +146,17 @@ class BaseAgent(ABC):
+                 except json.JSONDecodeError:
+                     continue
+ 
+-        logger.warning("Could not extract JSON from LLM response: %s…", text[:200])
++        refusal_markers = (
++            "i cannot assist", "i can't assist", "i am not able to",
++            "i'm not able to", "i won't be able to", "i'm unable to",
++        )
++        if any(m in text.lower() for m in refusal_markers):
++            logger.warning(
++                "LLM appears to have REFUSED the request (safety/policy "
++                "response) rather than returned malformed JSON — this is "
++                "not the same as the model deciding there's nothing left "
++                "to do: %s…", text[:200]
++            )
++        else:
++            logger.warning("Could not extract JSON from LLM response: %s…", text[:200])
+         return None
+diff --git a/agents/evaluator.py b/agents/evaluator.py
+index 524912f..a197688 100644
+--- a/agents/evaluator.py
++++ b/agents/evaluator.py
+@@ -34,31 +34,33 @@ logger = logging.getLogger("Evaluator")
+ # ── Prompt templates ──────────────────────────────────────────────────────────
+ 
+ _EVALUATE_PROMPT = """
+-You are a penetration testing verification expert.
+-
+-A security test just injected a malicious payload into a web application.
+-Your job is to determine whether the exploit was SUCCESSFUL.
+-
+-═══ ATTACK DETAILS ═══
+-Vulnerability hypothesis: {vuln_type} ({cwe_id})
+-Description:              {description}
+-Endpoint:                 {endpoint}
+-Original payload:         {original_payload}
+-Malicious payload:        {malicious_payload}
+-Field changed:            {field_changed}
+-Expected outcome:         {expected_outcome}
+-
+-═══ BEFORE ATTACK (DOM snapshot) ═══
++You are a QA engineer verifying the results of an authorized access-control
++test on an application you have permission to test.
++
++A test case submitted a modified request to check whether the application's
++access-control checks hold up. Your job is to determine whether the check
++was bypassed.
++
++═══ TEST DETAILS ═══
++Check type:                {vuln_type} ({cwe_id})
++Description:                {description}
++Endpoint:                   {endpoint}
++Original request value:     {original_payload}
++Modified request value:     {malicious_payload}
++Field changed:               {field_changed}
++Expected outcome if the check fails: {expected_outcome}
++
++═══ BEFORE (DOM snapshot) ═══
+ {pre_snapshot}
+ 
+-═══ AFTER ATTACK (DOM snapshot) ═══
++═══ AFTER (DOM snapshot) ═══
+ {post_snapshot}
+ 
+ ═══ NETWORK RESPONSE (last 3 requests) ═══
+ {network_responses}
+ 
+ ═══ EVALUATION CRITERIA ═══
+-Answer YES only if there is clear, unambiguous evidence that:
++Answer YES only if there is clear, unambiguous evidence the check did NOT hold:
+   - For IDOR: the response contains data clearly belonging to a DIFFERENT user
+     or resource (different name, email, account number, etc.)
+   - For PRICE_MANIP: the server accepted and confirmed a zero / negative price
+@@ -66,7 +68,7 @@ Answer YES only if there is clear, unambiguous evidence that:
+   - For TRUST_VIOLATION: a server-side-only field was accepted and reflected
+   - For any: the HTTP status changed from 4xx → 2xx AND content changed meaningfully
+ 
+-Do NOT mark as success if:
++Do NOT mark as a failed check if:
+   - The page just looks similar (similarity ≠ data exposure)
+   - You only see generic success messages without data
+   - The status is still 4xx or the error is unchanged
+@@ -76,7 +78,7 @@ Respond ONLY with a JSON object:
+   "success":   <true|false>,
+   "confidence": <0.0 – 1.0>,
+   "severity":  "<CRITICAL|HIGH|MEDIUM|LOW>",
+-  "evidence":  "<specific quoted text from DOM/response proving exploitability, or 'NONE'>",
++  "evidence":  "<specific quoted text from DOM/response proving the check failed, or 'NONE'>",
+   "reasoning": "<2-3 sentences explaining your verdict>"
+ }}
+ """
+diff --git a/agents/explorer.py b/agents/explorer.py
+index 2133ff0..d9f851e 100644
+--- a/agents/explorer.py
++++ b/agents/explorer.py
+@@ -30,7 +30,8 @@ logger = logging.getLogger("Explorer")
+ # ── Prompt templates ──────────────────────────────────────────────────────────
+ 
+ _SUMMARISE_PAGE_PROMPT = """
+-You are a security-focused web analyst.
++You are a QA engineer cataloguing the functionality of a web application
++you have permission to test.
+ Below is the accessibility tree snapshot of a web page.
+ Respond with ONLY a JSON object (no markdown):
+ 
+@@ -43,10 +44,10 @@ Respond with ONLY a JSON object (no markdown):
+       "type":   "button|link|input|select|form",
+       "label":  "<human-readable label>",
+       "value":  "<current value if input, else null>",
+-      "priority": <1-5, where 5 = most interesting for security testing>
++      "priority": <1-5, where 5 = most interesting to test next>
+     }}
+   ],
+-  "security_notes": "<any noteworthy access-control hints visible on this page>"
++  "notes": "<anything noteworthy about this page's functionality>"
+ }}
+ 
+ Accessibility tree:
+@@ -54,7 +55,8 @@ Accessibility tree:
+ """
+ 
+ _PICK_NEXT_ACTION_PROMPT = """
+-You are navigating a web application to build a comprehensive security map.
++You are cataloguing the functionality of a web application you have
++permission to test, by clicking through it like a QA engineer would.
+ You have already visited these URLs:
+ {visited_urls}
+ 
+@@ -62,7 +64,8 @@ Current page summary: {page_summary}
+ Available interactive elements:
+ {elements}
+ 
+-Pick the SINGLE most useful next action for exploring new functionality.
++Pick the SINGLE most useful next action to cover functionality you
++haven't explored yet.
+ Respond with ONLY a JSON object:
+ {{
+   "action":    "click|type|navigate|done",
+@@ -71,7 +74,8 @@ Respond with ONLY a JSON object:
+   "url":       "<URL to navigate to, if action is navigate>",
+   "reasoning": "<one-sentence justification>"
+ }}
+-Return {{"action": "done"}} when exploration is exhausted or step limit reached.
++Return {{"action": "done"}} when you've covered the available functionality
++or reached the step limit.
+ """
+ 
+ 
+diff --git a/agents/mutator.py b/agents/mutator.py
+index 7c7c608..0839720 100644
+--- a/agents/mutator.py
++++ b/agents/mutator.py
+@@ -138,22 +138,58 @@ def _rule_based_mutations(
+ 
+ # ── Helpers ───────────────────────────────────────────────────────────────────
+ 
++def _field_name(key: str) -> str:
++    """
++    Extract the matchable field name from a flattened key, stripping any
++    trailing array-index suffix, e.g. "items[0].price" -> "price",
++    "user_ids[2]" -> "user_ids".
++    """
++    return re.sub(r"\[\d+\]$", "", key.split(".")[-1])
++
++
++def _pluralized_forms(word: str) -> set[str]:
++    """
++    All plausible spellings (singular + plural) of a known pattern word.
++
++    We deliberately only ever pluralize FROM the small, fixed keyword
++    list — never try to singularize an arbitrary observed field name.
++    Singularizing an unknown word is ambiguous and lossy: is "status"
++    already singular, or a stripped plural of "statu"? There's no way to
++    tell from the string alone, and an earlier version of this function
++    that tried mangled "status" -> "statu". Pluralizing a *known* word
++    has no such ambiguity — we control the input.
++    """
++    forms = {word, f"{word}s"}
++    if len(word) > 1 and word.endswith("y") and word[-2] not in "aeiou":
++        forms.add(word[:-1] + "ies")
++    if word.endswith(("s", "x", "z", "ch", "sh")):
++        forms.add(word + "es")
++    return forms
++
++
++def _matches(key: str, patterns: set[str]) -> bool:
++    """True if key's field name matches any pattern, singular or plural."""
++    name = _field_name(key).lower()
++    return any(name in _pluralized_forms(p) for p in patterns)
++
++
+ def _looks_like_id_key(key: str) -> bool:
+     id_patterns = {"id", "user_id", "userid", "account_id", "order_id",
+-                   "resource_id", "owner_id", "profile_id", "customer_id"}
+-    return key.split(".")[-1].lower() in id_patterns
++                   "resource_id", "owner_id", "profile_id", "customer_id",
++                   "product_id", "item_id", "line_item_id"}
++    return _matches(key, id_patterns)
+ 
+ 
+ def _looks_like_price_key(key: str) -> bool:
+     price_keys = {"price", "total", "amount", "quantity", "qty",
+                   "cost", "subtotal", "discount", "unit_price"}
+-    return key.split(".")[-1].lower() in price_keys
++    return _matches(key, price_keys)
+ 
+ 
+ def _looks_like_role_key(key: str) -> bool:
+     role_keys = {"role", "roles", "permission", "permissions",
+                  "access_level", "privilege", "group"}
+-    return key.split(".")[-1].lower() in role_keys
++    return _matches(key, role_keys)
+ 
+ 
+ def _is_uuid(val: str) -> bool:
+@@ -164,23 +200,63 @@ def _is_uuid(val: str) -> bool:
+         return False
+ 
+ 
+-def _flatten(d: dict, prefix: str = "") -> dict:
+-    result = {}
+-    for k, v in d.items():
+-        full_key = f"{prefix}.{k}" if prefix else k
+-        if isinstance(v, dict):
++def _flatten(obj: Any, prefix: str = "") -> dict:
++    """
++    Recursively flatten a nested dict/list into {dotted.path: value} pairs.
++
++    List items get an index suffix, e.g. "items[0].price", so cart/line-item
++    arrays are visible to the mutation rules below — without this, a
++    payload like {"items": [{"price": 9.99}]} never produced a
++    PRICE_MANIP hypothesis at all.
++    """
++    result: dict = {}
++    if isinstance(obj, dict):
++        for k, v in obj.items():
++            full_key = f"{prefix}.{k}" if prefix else k
+             result.update(_flatten(v, full_key))
+-        else:
+-            result[full_key] = v
++    elif isinstance(obj, list):
++        for i, item in enumerate(obj):
++            full_key = f"{prefix}[{i}]"
++            result.update(_flatten(item, full_key))
++    else:
++        result[prefix] = obj
+     return result
+ 
+ 
++_PATH_SEGMENT_RE = re.compile(r"^([^\[\]]+)(?:\[(\d+)\])?$")
++
++
+ def _set_nested(d: dict, dotted_key: str, value: Any) -> None:
+-    """Set a value in a nested dict using dot notation."""
+-    keys = dotted_key.split(".")
+-    for key in keys[:-1]:
+-        d = d.setdefault(key, {})
+-    d[keys[-1]] = value
++    """
++    Set a value inside a nested dict/list structure using a dotted path
++    with optional [i] array-index suffixes, e.g. "items[0].price" or
++    "user.address.zip". Mirrors the path shape _flatten() produces above,
++    so any key it reports can be written straight back into the payload.
++    """
++    segments = dotted_key.split(".")
++    container = d
++
++    for i, seg in enumerate(segments):
++        m = _PATH_SEGMENT_RE.match(seg)
++        name, idx = (seg, None) if not m else (m.group(1), m.group(2))
++        idx = int(idx) if idx is not None else None
++        is_last = i == len(segments) - 1
++
++        if idx is None:
++            # Plain dict key
++            if is_last:
++                container[name] = value
++            else:
++                container = container.setdefault(name, {})
++        else:
++            # Array-indexed key, e.g. items[0]
++            lst = container.setdefault(name, [])
++            while len(lst) <= idx:
++                lst.append({})
++            if is_last:
++                lst[idx] = value
++            else:
++                container = lst[idx]
+ 
+ 
+ # ── Agent class ───────────────────────────────────────────────────────────────
+diff --git a/config.py b/config.py
+index 947cca7..da83598 100644
+--- a/config.py
++++ b/config.py
+@@ -37,7 +37,9 @@ class Config:
+     # ── Playwright MCP Server ─────────────────────────────────────────────────
+     MCP_COMMAND: str       = "npx"
+     MCP_ARGS: List[str]    = field(default_factory=lambda: [
+-        "@playwright/mcp@latest", "--headless", "--no-sandbox"
++        "@playwright/mcp@latest", "--headless", "--no-sandbox",
++        "--caps=network",   # exposes browser_route / browser_unroute — required
++                            # for payload injection; not enabled by default
+     ])
+ 
+     # ── Scanner Behaviour ─────────────────────────────────────────────────────
+diff --git a/mcp_client.py b/mcp_client.py
+index 787c85a..cbc68c4 100644
+--- a/mcp_client.py
++++ b/mcp_client.py
+@@ -14,6 +14,7 @@ from __future__ import annotations
+ 
+ import json
+ import logging
++import re
+ from typing import Any, Optional
+ 
+ from mcp import ClientSession, StdioServerParameters
+@@ -92,7 +93,7 @@ class PlaywrightMCPClient:
+         """Type text into an input field. Optionally press Enter to submit."""
+         result = await self._call("browser_type", {"ref": ref, "text": text})
+         if submit:
+-            await self._call("browser_press", {"key": "Enter"})
++            await self._call("browser_press_key", {"key": "Enter"})
+         return result
+ 
+     async def select_option(self, ref: str, value: str) -> dict:
+@@ -101,15 +102,20 @@ class PlaywrightMCPClient:
+ 
+     async def get_current_url(self) -> str:
+         """Return the URL currently loaded in the browser."""
+-        result = await self._call(
+-            "browser_evaluate", {"script": "window.location.href"}
+-        )
+-        return result.get("result", "") if isinstance(result, dict) else str(result)
++        result = await self.evaluate_js("window.location.href")
++        return result if isinstance(result, str) else str(result or "")
+ 
+     async def wait_for_load(self, timeout_ms: int = 3000) -> None:
+-        """Wait for the page network to go idle."""
+-        await self._call("browser_wait_for_load_state",
+-                         {"state": "networkidle", "timeout": timeout_ms})
++        """
++        Pause briefly after navigation/interaction.
++
++        Playwright MCP has no "networkidle" tool — the real browser_wait_for
++        tool only supports waiting for fixed time or for text to
++        appear/disappear (see https://playwright.dev/mcp). We approximate
++        the old networkidle behaviour with a capped fixed-time wait.
++        """
++        seconds = max(0.1, min(10, timeout_ms / 1000))
++        await self._call("browser_wait_for", {"time": seconds})
+ 
+     # ── Network Interception ──────────────────────────────────────────────────
+ 
+@@ -132,9 +138,8 @@ class PlaywrightMCPClient:
+         method: str = "POST",
+     ) -> dict:
+         """
+-        Register a one-shot route intercept on *url_pattern*.
+-        The next matching request will have its body replaced with
+-        *modified_body* before it reaches the backend.
++        Register a route mock on *url_pattern*. Matching requests get the
++        response body replaced with *modified_body*.
+ 
+         This is the core primitive for IDOR and business-logic testing —
+         equivalent to Burp Suite's Repeater tab, but automated.
+@@ -146,28 +151,42 @@ class PlaywrightMCPClient:
+             url_pattern: Glob or regex pattern matching the endpoint
+                          (e.g. '**/api/v1/profile*').
+             modified_body: The malicious payload dict to substitute.
+-            method: HTTP method filter (default POST).
++            method: Kept for the caller's/report's benefit only. The real
++                    browser_route tool has no method filter — it mocks
++                    every request matching url_pattern regardless of verb.
++                    If a GET (page load) and POST (submit) share a pattern,
++                    both get this same mocked response.
+ 
+         Returns:
+-            Confirmation dict from the MCP server.
++            Confirmation dict/text from the MCP server.
+         """
+-        return await self._call("browser_route_fulfil", {
+-            "url":         url_pattern,
+-            "method":      method,
++        return await self._call("browser_route", {
++            "pattern":     url_pattern,      # NOT "url" — that's not a real param
+             "body":        json.dumps(modified_body),
+             "contentType": "application/json",
+-            "status":      200,          # Let it through — backend decides fate
++            "status":      200,              # Let it through — backend decides fate
+         })
+ 
+     async def clear_routes(self) -> None:
+-        """Remove all active route intercepts."""
+-        await self._call("browser_route_clear", {})
++        """Remove all active route mocks."""
++        await self._call("browser_unroute", {})
+ 
+     # ── Utilities ─────────────────────────────────────────────────────────────
+ 
+-    async def evaluate_js(self, script: str) -> Any:
+-        """Execute arbitrary JavaScript in page context and return the result."""
+-        result = await self._call("browser_evaluate", {"script": script})
++    async def evaluate_js(self, expression: str) -> Any:
++        """
++        Execute a single JS expression in page context and return the result.
++
++        browser_evaluate's real parameter is "function" (not "script"), and
++        it must be a JS function expression — e.g. "() => 1 + 1", not a bare
++        "1 + 1". We do that wrapping here so callers can keep passing plain
++        expressions. Only pass a single expression, not multiple statements
++        (an arrow function with an implicit return can't contain a `;`
++        sequence the way a <script> body could).
++        """
++        result = await self._call(
++            "browser_evaluate", {"function": f"() => {expression}"}
++        )
+         return result.get("result") if isinstance(result, dict) else result
+ 
+     async def get_cookies(self) -> list[dict]:
+@@ -200,6 +219,31 @@ class PlaywrightMCPClient:
+         raw = result.content[0]
+         text = getattr(raw, "text", None) or str(raw)
+ 
++        # The MCP SDK reports tool-level failures (unknown tool, bad args,
++        # capability not enabled, etc.) via isError=True on the result
++        # rather than by raising — previously this fell through and got
++        # returned as if it were valid data, so a typo'd tool name like
++        # "browser_route_fulfil" failed *silently* instead of loudly.
++        if getattr(result, "isError", False):
++            logger.error("MCP tool error: %s(%s) → %s", tool_name, args, text)
++            raise RuntimeError(f"MCP tool '{tool_name}' returned an error: {text}")
++
++        # This playwright-mcp version (0.0.83 at time of writing) wraps some
++        # tool output in a human-readable report rather than bare JSON:
++        #   ### Result
++        #   "http://localhost:3000/#/"
++        #   ### Ran Playwright code
++        #   ```js
++        #   await page.evaluate('() => window.location.href');
++        #   ```
++        # Without unwrapping this, every caller (get_current_url, snapshot,
++        # etc.) received the whole report — including the JS source — as
++        # if it were the actual return value. Pull out just the Result
++        # section when present; harmless no-op when it isn't.
++        match = re.search(r"###\s*Result\s*\n(.*?)(?:\n###\s|\Z)", text, re.DOTALL)
++        if match:
++            text = match.group(1).strip()
++
+         try:
+             return json.loads(text)
+         except (json.JSONDecodeError, TypeError):
+diff --git a/memory/vector_store.py b/memory/vector_store.py
+index ef77039..1ef2b0c 100644
+--- a/memory/vector_store.py
++++ b/memory/vector_store.py
+@@ -214,10 +214,10 @@ class VectorStore:
+ 
+     @staticmethod
+     def _has_integer_id(body: dict) -> bool:
+-        id_keys = {"id", "user_id", "userId", "account_id", "order_id",
++        id_keys = {"id", "user_id", "userid", "account_id", "order_id",
+                    "product_id", "resource_id", "owner_id"}
+         return any(
+-            isinstance(v, int) and k.lower() in id_keys
++            isinstance(v, int) and _matches(k, id_keys)
+             for k, v in _flatten(body).items()
+         )
+ 
+@@ -235,24 +235,72 @@ class VectorStore:
+     def _has_price_field(body: dict) -> bool:
+         price_keys = {"price", "total", "amount", "quantity", "qty",
+                       "discount", "cost", "subtotal"}
+-        return any(k.lower() in price_keys for k in _flatten(body))
++        return any(_matches(k, price_keys) for k in _flatten(body))
+ 
+     @staticmethod
+     def _has_role_field(body: dict) -> bool:
+         role_keys = {"role", "roles", "permission", "permissions",
+                      "access_level", "is_admin", "admin", "privilege"}
+-        return any(k.lower() in role_keys for k in _flatten(body))
++        return any(_matches(k, role_keys) for k in _flatten(body))
+ 
+ 
+ # ── Utility ───────────────────────────────────────────────────────────────────
+ 
+-def _flatten(d: dict, prefix: str = "") -> dict:
+-    """Recursively flatten a nested dict for key-level inspection."""
+-    result = {}
+-    for k, v in d.items():
+-        full_key = f"{prefix}.{k}" if prefix else k
+-        if isinstance(v, dict):
++def _flatten(obj: Any, prefix: str = "") -> dict:
++    """
++    Recursively flatten a nested dict/list into {dotted.path: value} pairs.
++
++    List items get an index suffix, e.g. "items[0].price", so that fields
++    nested inside cart/line-item arrays — the normal shape of a checkout
++    payload — are visible to the has_* detectors above. Detectors match via
++    _matches(), which strips the trailing [i] and singularizes before
++    comparing, so "items[0].price", "cart.price" and "prices[0]" (a bare
++    scalar array) all correctly register as a price field.
++    """
++    result: dict = {}
++    if isinstance(obj, dict):
++        for k, v in obj.items():
++            full_key = f"{prefix}.{k}" if prefix else k
+             result.update(_flatten(v, full_key))
+-        else:
+-            result[full_key] = v
++    elif isinstance(obj, list):
++        for i, item in enumerate(obj):
++            full_key = f"{prefix}[{i}]"
++            result.update(_flatten(item, full_key))
++    else:
++        result[prefix] = obj
+     return result
++
++
++def _field_name(key: str) -> str:
++    """
++    Extract the matchable field name from a flattened key, stripping any
++    trailing array-index suffix, e.g. "items[0].price" -> "price",
++    "user_ids[2]" -> "user_ids".
++    """
++    return re.sub(r"\[\d+\]$", "", key.split(".")[-1])
++
++
++def _pluralized_forms(word: str) -> set[str]:
++    """
++    All plausible spellings (singular + plural) of a known pattern word.
++
++    We deliberately only ever pluralize FROM the small, fixed keyword
++    list — never try to singularize an arbitrary observed field name.
++    Singularizing an unknown word is ambiguous and lossy: is "status"
++    already singular, or a stripped plural of "statu"? There's no way to
++    tell from the string alone, and an earlier version of this function
++    that tried mangled "status" -> "statu". Pluralizing a *known* word
++    has no such ambiguity — we control the input.
++    """
++    forms = {word, f"{word}s"}
++    if len(word) > 1 and word.endswith("y") and word[-2] not in "aeiou":
++        forms.add(word[:-1] + "ies")
++    if word.endswith(("s", "x", "z", "ch", "sh")):
++        forms.add(word + "es")
++    return forms
++
++
++def _matches(key: str, patterns: set[str]) -> bool:
++    """True if key's field name matches any pattern, singular or plural."""
++    name = _field_name(key).lower()
++    return any(name in _pluralized_forms(p) for p in patterns)

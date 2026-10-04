@@ -34,39 +34,40 @@ logger = logging.getLogger("Evaluator")
 # ── Prompt templates ──────────────────────────────────────────────────────────
 
 _EVALUATE_PROMPT = """
-You are a penetration testing verification expert.
+You are a QA engineer verifying the results of an authorized access-control
+test on an application you have permission to test.
 
-A security test just injected a malicious payload into a web application.
-Your job is to determine whether the exploit was SUCCESSFUL.
+A test case submitted a modified request to check whether the application's
+access-control checks hold up. Your job is to determine whether the check
+was bypassed.
 
-═══ ATTACK DETAILS ═══
-Vulnerability hypothesis: {vuln_type} ({cwe_id})
-Description:              {description}
-Endpoint:                 {endpoint}
-Original payload:         {original_payload}
-Malicious payload:        {malicious_payload}
-Field changed:            {field_changed}
-Expected outcome:         {expected_outcome}
+═══ TEST DETAILS ═══
+Check type:                {vuln_type} ({cwe_id})
+Description:                {description}
+Endpoint:                   {endpoint}
+Original request value:     {original_payload}
+Modified request value:     {malicious_payload}
+Field changed:               {field_changed}
+Expected outcome if the check fails: {expected_outcome}
 
-═══ BEFORE ATTACK (DOM snapshot) ═══
+═══ BEFORE (DOM snapshot) ═══
 {pre_snapshot}
 
-═══ AFTER ATTACK (DOM snapshot) ═══
+═══ AFTER (DOM snapshot) ═══
 {post_snapshot}
 
 ═══ NETWORK RESPONSE (last 3 requests) ═══
 {network_responses}
 
 ═══ EVALUATION CRITERIA ═══
-Answer YES only if there is clear, unambiguous evidence that:
+Answer YES only if there is clear, unambiguous evidence the check did NOT hold:
   - For IDOR: the response contains data clearly belonging to a DIFFERENT user
     or resource (different name, email, account number, etc.)
   - For PRICE_MANIP: the server accepted and confirmed a zero / negative price
-  - For PRIVILEGE_ESC: the UI or response grants elevated permissions
   - For TRUST_VIOLATION: a server-side-only field was accepted and reflected
   - For any: the HTTP status changed from 4xx → 2xx AND content changed meaningfully
 
-Do NOT mark as success if:
+Do NOT mark as a failed check if:
   - The page just looks similar (similarity ≠ data exposure)
   - You only see generic success messages without data
   - The status is still 4xx or the error is unchanged
@@ -76,7 +77,7 @@ Respond ONLY with a JSON object:
   "success":   <true|false>,
   "confidence": <0.0 – 1.0>,
   "severity":  "<CRITICAL|HIGH|MEDIUM|LOW>",
-  "evidence":  "<specific quoted text from DOM/response proving exploitability, or 'NONE'>",
+  "evidence":  "<specific quoted text from DOM/response proving the check failed, or 'NONE'>",
   "reasoning": "<2-3 sentences explaining your verdict>"
 }}
 """
