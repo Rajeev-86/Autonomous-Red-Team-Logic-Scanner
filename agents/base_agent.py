@@ -10,22 +10,90 @@ Provides shared infrastructure for all three swarm agents:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from abc import ABC
-from typing import Any
+from typing import Any, Optional
 
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
+    retry_if_not_exception_type,
 )
 
 from config import config
 
 logger = logging.getLogger("BaseAgent")
+
+
+class GeminiQuotaExhaustedError(RuntimeError):
+    """All configured Gemini API keys are currently rate-limited."""
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Best-effort detection of Gemini 429 and quota-exhaustion errors."""
+    msg = str(exc).lower()
+    return any(s in msg for s in ("429", "resource_exhausted", "rate limit", "quota"))
+
+
+def _parse_retry_delay(exc: Exception) -> Optional[float]:
+    """Extract a server-suggested retry delay in seconds, if present."""
+    match = re.search(
+        r"retrydelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s",
+        str(exc).lower(),
+    )
+    return float(match.group(1)) if match else None
+
+
+class GeminiKeyPool:
+    """Rotate across Gemini keys and temporarily cool down rate-limited keys."""
+
+    DEFAULT_COOLDOWN_SECONDS = 65.0
+
+    def __init__(self, api_keys: list[str]):
+        if not api_keys:
+            raise ValueError("GeminiKeyPool needs at least one API key")
+        self._keys = api_keys
+        self._clients: dict[int, Any] = {}
+        self._cooldown_until: dict[int, float] = {}
+        self._cursor = 0
+
+    def _client_for(self, idx: int):
+        if idx not in self._clients:
+            from google import genai as google_genai
+            self._clients[idx] = google_genai.Client(api_key=self._keys[idx])
+        return self._clients[idx]
+
+    def current(self):
+        """Return the next available (index, client), or None if all cool down."""
+        for offset in range(len(self._keys)):
+            idx = (self._cursor + offset) % len(self._keys)
+            if time.time() >= self._cooldown_until.get(idx, 0.0):
+                self._cursor = idx
+                return idx, self._client_for(idx)
+        return None
+
+    def seconds_until_next_available(self) -> float:
+        """Return the wait until the soonest key cooldown expires."""
+        if not self._cooldown_until:
+            return 0.0
+        return max(0.0, min(self._cooldown_until.values()) - time.time())
+
+    def mark_exhausted(self, idx: int, cooldown_seconds: Optional[float] = None) -> None:
+        cooldown = cooldown_seconds or self.DEFAULT_COOLDOWN_SECONDS
+        self._cooldown_until[idx] = time.time() + cooldown
+        logger.warning("Gemini key #%d rate-limited; cooling down for %.0fs.", idx + 1, cooldown)
+        self._cursor = (idx + 1) % len(self._keys)
+
+    def reset(self) -> None:
+        """Clear all key cooldowns."""
+        self._cooldown_until.clear()
+        self._cursor = 0
 
 
 class BaseAgent(ABC):
@@ -35,16 +103,16 @@ class BaseAgent(ABC):
     """
 
     def __init__(self):
-        self._gemini = None
+        self._gemini_pool: GeminiKeyPool | None = None
         self._groq   = None
         self._init_clients()
 
     def _init_clients(self):
-        # ── Gemini client ──────────────────────────────────────────────────
-        if config.GEMINI_API_KEY:
+        # ── Gemini client(s) ──────────────────────────────────────────────
+        if config.GEMINI_API_KEYS:
             try:
-                from google import genai as google_genai
-                self._gemini = google_genai.Client(api_key=config.GEMINI_API_KEY)
+                from google import genai as google_genai  # noqa: F401
+                self._gemini_pool = GeminiKeyPool(config.GEMINI_API_KEYS)
             except ImportError:
                 logger.warning("google-genai not installed; Gemini unavailable.")
 
@@ -61,7 +129,7 @@ class BaseAgent(ABC):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(Exception),
+        retry=retry_if_not_exception_type(GeminiQuotaExhaustedError),
         reraise=True,
     )
     async def _gemini_generate(
@@ -72,18 +140,48 @@ class BaseAgent(ABC):
     ) -> str:
         """
         Call Gemini and return the raw text response.
-        Retries up to 3× with exponential back-off on errors.
+        Rotate to another configured key immediately on a rate-limit error.
         """
-        if self._gemini is None:
-            raise RuntimeError("Gemini client not initialised. Check GEMINI_API_KEY.")
+        if self._gemini_pool is None:
+            raise RuntimeError("Gemini client not initialised. Check GEMINI_API_KEY(S).")
 
         model = model or config.EXPLORER_MODEL
-        response = await self._gemini.aio.models.generate_content(
-            model=model,
-            contents=prompt,
-            config={"max_output_tokens": max_tokens, "temperature": 0.2},
-        )
-        return response.text
+        max_full_pool_waits = 3
+        full_pool_waits = 0
+
+        while True:
+            current = self._gemini_pool.current()
+            if current is None:
+                full_pool_waits += 1
+                if full_pool_waits > max_full_pool_waits:
+                    raise GeminiQuotaExhaustedError(
+                        f"All {len(config.GEMINI_API_KEYS)} configured Gemini key(s) "
+                        f"are still rate-limited after {max_full_pool_waits} cooldown "
+                        "cycles. This may indicate daily quota exhaustion."
+                    )
+                wait_seconds = self._gemini_pool.seconds_until_next_available() + 1
+                logger.warning(
+                    "All Gemini keys are cooling down; waiting %.0fs (%d/%d).",
+                    wait_seconds, full_pool_waits, max_full_pool_waits,
+                )
+                await asyncio.sleep(wait_seconds)
+                continue
+
+            idx, client = current
+            try:
+                response = await client.aio.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config={"max_output_tokens": max_tokens, "temperature": 0.2},
+                )
+                return response.text
+            except Exception as exc:
+                if _is_rate_limit_error(exc):
+                    self._gemini_pool.mark_exhausted(
+                        idx, cooldown_seconds=_parse_retry_delay(exc)
+                    )
+                    continue
+                raise
 
     # ── Groq (Mutator) ─────────────────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ This is the "happy-path" phase — no attacks are launched here.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import Optional
 
@@ -130,16 +131,14 @@ class ExplorerAgent(BaseAgent):
             await self._ingest_network_requests(network_requests, snapshot)
 
             # ── Add / update node in state graph ───────────────────────────
+            fingerprint = hashlib.sha256(snapshot.encode()).hexdigest()[:16]
             node = ViewNode(
                 url=current_url,
                 dom_summary=page_data.get("page_summary", ""),
                 session_state={"is_authenticated": page_data.get("is_authenticated")},
+                structural_fingerprint=fingerprint,
             )
             new_node_id = self.state_graph.add_node(node)
-
-            if self._current_node_id and self._current_node_id != new_node_id:
-                # Record how we got here
-                pass  # Edge will be recorded after we know the action that led here
 
             self._visited_urls.add(current_url)
             self._current_node_id = new_node_id
@@ -154,21 +153,29 @@ class ExplorerAgent(BaseAgent):
                 logger.info("Explorer: done signal at step %d.", step + 1)
                 break
 
+            logger.debug(
+                "[Step %d] action=%s ref=%s text=%s url=%s reasoning=%s",
+                step + 1, action.get("action"), action.get("ref"),
+                action.get("text"), action.get("url"), action.get("reasoning"),
+            )
+
             prev_node_id = new_node_id
             await self._execute_action(action)
             await self.browser.wait_for_load(timeout_ms=2000)
 
-            # Record the edge from previous node to whatever came next
+            # Include same-URL structural changes such as SPA dialogs.
             new_url = await self.browser.get_current_url()
-            if new_url != current_url:
-                new_snapshot = await self.browser.snapshot()
-                new_data     = await self._analyse_page(new_snapshot)
-                target_node  = ViewNode(
-                    url=new_url,
-                    dom_summary=(new_data or {}).get("page_summary", ""),
-                    session_state={},
-                )
-                target_id = self.state_graph.add_node(target_node)
+            new_snapshot = await self.browser.snapshot()
+            new_fingerprint = hashlib.sha256(new_snapshot.encode()).hexdigest()[:16]
+            target_node = ViewNode(
+                url=new_url,
+                dom_summary="",
+                session_state={},
+                structural_fingerprint=new_fingerprint,
+            )
+            target_id = self.state_graph.add_node(target_node)
+
+            if target_id != prev_node_id:
                 edge = ActionEdge(
                     source_id=prev_node_id,
                     target_id=target_id,

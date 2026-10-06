@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Optional
 
 from mcp import ClientSession, StdioServerParameters
@@ -209,6 +210,10 @@ class PlaywrightMCPClient:
         if getattr(result, "isError", False):
             logger.error("MCP tool error: %s(%s) → %s", tool_name, args, text)
             raise RuntimeError(f"MCP tool '{tool_name}' returned an error: {text}")
+
+        match = re.search(r"###\s*Result\s*\n(.*?)(?:\n###\s|\Z)", text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
 
         try:
             return json.loads(text)

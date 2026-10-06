@@ -20,10 +20,20 @@ class Config:
     GEMINI_API_KEY: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     GROQ_API_KEY:   str = field(default_factory=lambda: os.getenv("GROQ_API_KEY",   ""))
 
+    # Optional: multiple Gemini keys for round-robin on rate limits, e.g.
+    #   GEMINI_API_KEYS=key_from_project_a,key_from_project_b
+    # Note: Gemini free-tier rate limits are enforced PER GOOGLE CLOUD
+    # PROJECT, not per API key — multiple keys from the SAME project share
+    # one quota pool and this will not add any capacity. Each key here needs
+    # to come from a genuinely separate project. Falls back to [GEMINI_API_KEY].
+    GEMINI_API_KEYS: List[str] = field(default_factory=lambda: [
+        key.strip() for key in os.getenv("GEMINI_API_KEYS", "").split(",") if key.strip()
+    ] or ([os.getenv("GEMINI_API_KEY", "")] if os.getenv("GEMINI_API_KEY") else []))
+
     # ── Model Selection ───────────────────────────────────────────────────────
     # Explorer & Evaluator — high-context DOM reasoning
-    EXPLORER_MODEL:  str = "gemini-3.5-flash"
-    EVALUATOR_MODEL: str = "gemini-3.5-flash"
+    EXPLORER_MODEL:  str = "gemini-3.5-flash-lite"
+    EVALUATOR_MODEL: str = "gemini-3.5-flash-lite"
     # Mutator — high-throughput payload generation via Groq free tier
     MUTATOR_MODEL: str = "meta-llama/llama-4-scout-17b-16e-instruct"   # or "qwen/qwen3-32b"
 
@@ -59,8 +69,8 @@ class Config:
     def validate(self):
         """Raise early if critical config is missing."""
         missing = []
-        if not self.GEMINI_API_KEY:
-            missing.append("GEMINI_API_KEY")
+        if not self.GEMINI_API_KEYS:
+            missing.append("GEMINI_API_KEY (or GEMINI_API_KEYS)")
         if not self.GROQ_API_KEY:
             missing.append("GROQ_API_KEY")
         if not self.TARGET_URL:

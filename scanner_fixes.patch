@@ -1,8 +1,267 @@
+diff --git a/.env.example b/.env.example
+index 75aadf5..ab2a53a 100644
+--- a/.env.example
++++ b/.env.example
+@@ -3,10 +3,19 @@
+ 
+ # ── LLM API Keys ──────────────────────────────────────────────────────────────
+ 
+-# Gemini 2.5 Flash (Explorer + Evaluator agents)
++# Gemini (Explorer + Evaluator agents)
+ # Free tier: https://ai.google.dev/
+ GEMINI_API_KEY='YOUR_GEMINI_API_KEY_HERE'
+ 
++# Optional: comma-separated keys for round-robin on rate limits, e.g.
++#   GEMINI_API_KEYS=key_from_project_a,key_from_project_b
++# IMPORTANT: Gemini free-tier rate limits are per GOOGLE CLOUD PROJECT,
++# not per key — keys from the SAME project share one quota pool and
++# adding more of them here will NOT add any capacity. Each key must come
++# from a genuinely separate project for this to help. If unset, falls
++# back to the single GEMINI_API_KEY above.
++# GEMINI_API_KEYS=
++
+ # Groq (Mutator agent — Llama 4 Scout or Qwen3 32B)
+ # Free tier: https://console.groq.com/
+ GROQ_API_KEY='YOUR_GROQ_API_KEY_HERE'
 diff --git a/agents/base_agent.py b/agents/base_agent.py
-index 1e73c6c..7c24e1e 100644
+index 1e73c6c..55a6bce 100644
 --- a/agents/base_agent.py
 +++ b/agents/base_agent.py
-@@ -146,5 +146,17 @@ class BaseAgent(ABC):
+@@ -10,17 +10,20 @@ Provides shared infrastructure for all three swarm agents:
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ import json
+ import logging
+ import re
++import time
+ from abc import ABC
+-from typing import Any
++from typing import Any, Optional
+ 
+ from tenacity import (
+     retry,
+     stop_after_attempt,
+     wait_exponential,
+     retry_if_exception_type,
++    retry_if_not_exception_type,
+ )
+ 
+ from config import config
+@@ -28,6 +31,106 @@ from config import config
+ logger = logging.getLogger("BaseAgent")
+ 
+ 
++class GeminiQuotaExhaustedError(RuntimeError):
++    """Every configured Gemini API key is still cooling down from a 429."""
++
++
++def _is_rate_limit_error(exc: Exception) -> bool:
++    """
++    Best-effort detection of a Gemini 429 / quota-exhausted error from the
++    exception text. Not verified against a live SDK error object in this
++    environment — if your SDK version raises something this doesn't catch,
++    widen the substrings below based on the actual exception message.
++    """
++    msg = str(exc).lower()
++    return any(s in msg for s in ("429", "resource_exhausted", "rate limit", "quota"))
++
++
++def _parse_retry_delay(exc: Exception) -> Optional[float]:
++    """
++    Best-effort extraction of a server-suggested retry delay (seconds)
++    from a 429 error's text, e.g. "...'retryDelay': '34s'...". Returns
++    None if nothing parseable was found, so the caller falls back to a
++    conservative default.
++    """
++    m = re.search(r"retrydelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s", str(exc).lower())
++    return float(m.group(1)) if m else None
++
++
++class GeminiKeyPool:
++    """
++    Round-robins across multiple Gemini API keys, putting a rate-limited
++    key on a short COOLDOWN rather than treating it as dead for the rest
++    of the run.
++
++    This matters because Gemini's free tier has three separate limits —
++    RPM (resets every ~60s), TPM, and RPD (resets at midnight Pacific) —
++    and in practice RPM is usually what you actually hit first, with RPD
++    nowhere near exhausted (e.g. 15/15 RPM maxed out while RPD sits at
++    55/500). Marking a key as gone until an explicit reset() wastes a key
++    that would already be usable again a minute later; this pool instead
++    tracks a per-key cooldown timestamp, parsed from the API's own
++    retryDelay when present, and makes the key available again on its own
++    once that cooldown passes.
++
++    IMPORTANT: Gemini free-tier rate limits are enforced per GOOGLE CLOUD
++    PROJECT, not per API key (ai.google.dev/gemini-api/docs/rate-limits).
++    Multiple keys from the SAME project share one quota pool and will all
++    get rate-limited together — each key here needs to come from a
++    genuinely separate project (separate Google account is the safest way
++    to guarantee that) for this pool to add real capacity.
++    """
++
++    DEFAULT_COOLDOWN_SECONDS = 65.0  # a little over Gemini's 60s RPM window
++
++    def __init__(self, api_keys: list[str]):
++        if not api_keys:
++            raise ValueError("GeminiKeyPool needs at least one API key")
++        self._keys = api_keys
++        self._clients: dict[int, Any] = {}
++        self._cooldown_until: dict[int, float] = {}  # idx -> unix timestamp
++        self._cursor = 0
++
++    def _client_for(self, idx: int):
++        if idx not in self._clients:
++            from google import genai as google_genai
++            self._clients[idx] = google_genai.Client(api_key=self._keys[idx])
++        return self._clients[idx]
++
++    def _is_available(self, idx: int) -> bool:
++        return time.time() >= self._cooldown_until.get(idx, 0.0)
++
++    def current(self):
++        """(index, client) for the next available key, or None if all are cooling down."""
++        n = len(self._keys)
++        for offset in range(n):
++            idx = (self._cursor + offset) % n
++            if self._is_available(idx):
++                self._cursor = idx
++                return idx, self._client_for(idx)
++        return None
++
++    def seconds_until_next_available(self) -> float:
++        """How long until the soonest-recovering key becomes available again."""
++        if not self._cooldown_until:
++            return 0.0
++        return max(0.0, min(self._cooldown_until.values()) - time.time())
++
++    def mark_exhausted(self, idx: int, cooldown_seconds: Optional[float] = None) -> None:
++        cooldown = cooldown_seconds or self.DEFAULT_COOLDOWN_SECONDS
++        self._cooldown_until[idx] = time.time() + cooldown
++        logger.warning(
++            "Gemini key #%d rate-limited — cooling down for %.0fs.",
++            idx + 1, cooldown,
++        )
++        self._cursor = (idx + 1) % len(self._keys)
++
++    def reset(self) -> None:
++        """Clear all cooldowns immediately (e.g. at the start of a new day/run)."""
++        self._cooldown_until.clear()
++        self._cursor = 0
++
++
+ class BaseAgent(ABC):
+     """
+     All agents inherit from this class to get consistent LLM access
+@@ -35,16 +138,16 @@ class BaseAgent(ABC):
+     """
+ 
+     def __init__(self):
+-        self._gemini = None
++        self._gemini_pool: GeminiKeyPool | None = None
+         self._groq   = None
+         self._init_clients()
+ 
+     def _init_clients(self):
+-        # ── Gemini client ──────────────────────────────────────────────────
+-        if config.GEMINI_API_KEY:
++        # ── Gemini client(s) ──────────────────────────────────────────────
++        if config.GEMINI_API_KEYS:
+             try:
+-                from google import genai as google_genai
+-                self._gemini = google_genai.Client(api_key=config.GEMINI_API_KEY)
++                from google import genai as google_genai  # noqa: F401 — import check
++                self._gemini_pool = GeminiKeyPool(config.GEMINI_API_KEYS)
+             except ImportError:
+                 logger.warning("google-genai not installed; Gemini unavailable.")
+ 
+@@ -61,7 +164,12 @@ class BaseAgent(ABC):
+     @retry(
+         stop=stop_after_attempt(3),
+         wait=wait_exponential(multiplier=1, min=2, max=30),
+-        retry=retry_if_exception_type(Exception),
++        # Rate-limit exhaustion across the whole key pool is handled inside
++        # the function body by switching keys immediately, not by waiting —
++        # backing off and calling the exact same exhausted pool again
++        # wastes these 3 attempts for nothing. This decorator now only
++        # retries genuinely transient errors (timeouts, network blips).
++        retry=retry_if_not_exception_type(GeminiQuotaExhaustedError),
+         reraise=True,
+     )
+     async def _gemini_generate(
+@@ -72,18 +180,59 @@ class BaseAgent(ABC):
+     ) -> str:
+         """
+         Call Gemini and return the raw text response.
+-        Retries up to 3× with exponential back-off on errors.
++
++        On a 429 from the current key, immediately rotates to the next
++        configured key (if any) rather than waiting — see GeminiKeyPool's
++        docstring for why more keys only help if they're from separate
++        GCP projects. Raises GeminiQuotaExhaustedError once every
++        configured key has hit its limit.
+         """
+-        if self._gemini is None:
+-            raise RuntimeError("Gemini client not initialised. Check GEMINI_API_KEY.")
++        if self._gemini_pool is None:
++            raise RuntimeError("Gemini client not initialised. Check GEMINI_API_KEY(S).")
+ 
+         model = model or config.EXPLORER_MODEL
+-        response = await self._gemini.aio.models.generate_content(
+-            model=model,
+-            contents=prompt,
+-            config={"max_output_tokens": max_tokens, "temperature": 0.2},
+-        )
+-        return response.text
++        max_full_pool_waits = 3  # ~3 x 65s ≈ 3-4 min before giving up
++        full_pool_waits = 0
++        last_exc: Exception | None = None
++
++        while True:
++            current = self._gemini_pool.current()
++
++            if current is None:
++                full_pool_waits += 1
++                if full_pool_waits > max_full_pool_waits:
++                    raise GeminiQuotaExhaustedError(
++                        f"All {len(config.GEMINI_API_KEYS)} configured Gemini key(s) "
++                        f"are still rate-limited after waiting through "
++                        f"{max_full_pool_waits} cooldown cycles. If this keeps "
++                        "happening it's likely genuine RPD (daily) exhaustion, "
++                        "not RPM — that resets at midnight Pacific, not in a "
++                        "few minutes."
++                    )
++                wait_s = self._gemini_pool.seconds_until_next_available() + 1
++                logger.warning(
++                    "All Gemini keys cooling down — waiting %.0fs for the "
++                    "soonest one to recover (attempt %d/%d).",
++                    wait_s, full_pool_waits, max_full_pool_waits,
++                )
++                await asyncio.sleep(wait_s)
++                continue
++
++            idx, client = current
++            try:
++                response = await client.aio.models.generate_content(
++                    model=model,
++                    contents=prompt,
++                    config={"max_output_tokens": max_tokens, "temperature": 0.2},
++                )
++                return response.text
++            except Exception as exc:
++                last_exc = exc
++                if _is_rate_limit_error(exc):
++                    delay = _parse_retry_delay(exc)
++                    self._gemini_pool.mark_exhausted(idx, cooldown_seconds=delay)
++                    continue
++                raise  # not a rate-limit error — let the outer @retry handle it
+ 
+     # ── Groq (Mutator) ─────────────────────────────────────────────────────────
+ 
+@@ -146,5 +295,17 @@ class BaseAgent(ABC):
                  except json.JSONDecodeError:
                      continue
  
@@ -95,10 +354,18 @@ index 524912f..a197688 100644
  }}
  """
 diff --git a/agents/explorer.py b/agents/explorer.py
-index 2133ff0..d9f851e 100644
+index 2133ff0..b661b26 100644
 --- a/agents/explorer.py
 +++ b/agents/explorer.py
-@@ -30,7 +30,8 @@ logger = logging.getLogger("Explorer")
+@@ -16,6 +16,7 @@ This is the "happy-path" phase — no attacks are launched here.
+ from __future__ import annotations
+ 
+ import asyncio
++import hashlib
+ import logging
+ from typing import Optional
+ 
+@@ -30,7 +31,8 @@ logger = logging.getLogger("Explorer")
  # ── Prompt templates ──────────────────────────────────────────────────────────
  
  _SUMMARISE_PAGE_PROMPT = """
@@ -108,7 +375,7 @@ index 2133ff0..d9f851e 100644
  Below is the accessibility tree snapshot of a web page.
  Respond with ONLY a JSON object (no markdown):
  
-@@ -43,10 +44,10 @@ Respond with ONLY a JSON object (no markdown):
+@@ -43,10 +45,10 @@ Respond with ONLY a JSON object (no markdown):
        "type":   "button|link|input|select|form",
        "label":  "<human-readable label>",
        "value":  "<current value if input, else null>",
@@ -121,7 +388,7 @@ index 2133ff0..d9f851e 100644
  }}
  
  Accessibility tree:
-@@ -54,7 +55,8 @@ Accessibility tree:
+@@ -54,7 +56,8 @@ Accessibility tree:
  """
  
  _PICK_NEXT_ACTION_PROMPT = """
@@ -131,7 +398,7 @@ index 2133ff0..d9f851e 100644
  You have already visited these URLs:
  {visited_urls}
  
-@@ -62,7 +64,8 @@ Current page summary: {page_summary}
+@@ -62,7 +65,8 @@ Current page summary: {page_summary}
  Available interactive elements:
  {elements}
  
@@ -141,7 +408,7 @@ index 2133ff0..d9f851e 100644
  Respond with ONLY a JSON object:
  {{
    "action":    "click|type|navigate|done",
-@@ -71,7 +74,8 @@ Respond with ONLY a JSON object:
+@@ -71,7 +75,8 @@ Respond with ONLY a JSON object:
    "url":       "<URL to navigate to, if action is navigate>",
    "reasoning": "<one-sentence justification>"
  }}
@@ -151,6 +418,77 @@ index 2133ff0..d9f851e 100644
  """
  
  
+@@ -126,17 +131,15 @@ class ExplorerAgent(BaseAgent):
+             await self._ingest_network_requests(network_requests, snapshot)
+ 
+             # ── Add / update node in state graph ───────────────────────────
++            fingerprint = hashlib.sha256(snapshot.encode()).hexdigest()[:16]
+             node = ViewNode(
+                 url=current_url,
+                 dom_summary=page_data.get("page_summary", ""),
+                 session_state={"is_authenticated": page_data.get("is_authenticated")},
++                structural_fingerprint=fingerprint,
+             )
+             new_node_id = self.state_graph.add_node(node)
+ 
+-            if self._current_node_id and self._current_node_id != new_node_id:
+-                # Record how we got here
+-                pass  # Edge will be recorded after we know the action that led here
+-
+             self._visited_urls.add(current_url)
+             self._current_node_id = new_node_id
+ 
+@@ -150,21 +153,39 @@ class ExplorerAgent(BaseAgent):
+                 logger.info("Explorer: done signal at step %d.", step + 1)
+                 break
+ 
++            logger.debug(
++                "[Step %d] action=%s ref=%s text=%s url=%s reasoning=%s",
++                step + 1, action.get("action"), action.get("ref"),
++                action.get("text"), action.get("url"), action.get("reasoning"),
++            )
++
+             prev_node_id = new_node_id
+             await self._execute_action(action)
+             await self.browser.wait_for_load(timeout_ms=2000)
+ 
+-            # Record the edge from previous node to whatever came next
+-            new_url = await self.browser.get_current_url()
+-            if new_url != current_url:
+-                new_snapshot = await self.browser.snapshot()
+-                new_data     = await self._analyse_page(new_snapshot)
+-                target_node  = ViewNode(
+-                    url=new_url,
+-                    dom_summary=(new_data or {}).get("page_summary", ""),
+-                    session_state={},
+-                )
+-                target_id = self.state_graph.add_node(target_node)
++            # Record the edge from previous node to whatever came next.
++            # Deliberately checking structural state, not just the URL:
++            # a lot of real functionality (login/register/product-detail
++            # dialogs, cart drawers, etc.) opens as an overlay on the SAME
++            # URL in SPAs like this one, so comparing current_url == new_url
++            # alone silently missed all of that and never recorded an edge.
++            # No extra LLM call here — node identity is now a hash of the
++            # raw snapshot, not an LLM summary, so this is free to check on
++            # every step; if this state already has a node (a plain revisit
++            # or a false-positive fingerprint change), add_node() just
++            # increments visit_count instead of minting a duplicate.
++            new_url         = await self.browser.get_current_url()
++            new_snapshot    = await self.browser.snapshot()
++            new_fingerprint = hashlib.sha256(new_snapshot.encode()).hexdigest()[:16]
++            target_node = ViewNode(
++                url=new_url,
++                dom_summary="",  # filled in properly once the main loop visits this node
++                session_state={},
++                structural_fingerprint=new_fingerprint,
++            )
++            target_id = self.state_graph.add_node(target_node)
++
++            if target_id != prev_node_id:
+                 edge = ActionEdge(
+                     source_id=prev_node_id,
+                     target_id=target_id,
 diff --git a/agents/mutator.py b/agents/mutator.py
 index 7c7c608..0839720 100644
 --- a/agents/mutator.py
@@ -295,10 +633,28 @@ index 7c7c608..0839720 100644
  
  # ── Agent class ───────────────────────────────────────────────────────────────
 diff --git a/config.py b/config.py
-index 947cca7..da83598 100644
+index 947cca7..fcf8178 100644
 --- a/config.py
 +++ b/config.py
-@@ -37,7 +37,9 @@ class Config:
+@@ -20,6 +20,17 @@ class Config:
+     GEMINI_API_KEY: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+     GROQ_API_KEY:   str = field(default_factory=lambda: os.getenv("GROQ_API_KEY",   ""))
+ 
++    # Optional: multiple Gemini keys for round-robin on rate limits, e.g.
++    #   GEMINI_API_KEYS=key_from_project_a,key_from_project_b
++    # Note: Gemini free-tier rate limits are enforced PER GOOGLE CLOUD
++    # PROJECT, not per key (ai.google.dev/gemini-api/docs/rate-limits) —
++    # multiple keys from the SAME project share one quota pool and this
++    # will not add any capacity. Each key here needs to come from a
++    # genuinely separate project. Falls back to [GEMINI_API_KEY] if unset.
++    GEMINI_API_KEYS: List[str] = field(default_factory=lambda: [
++        k.strip() for k in os.getenv("GEMINI_API_KEYS", "").split(",") if k.strip()
++    ] or ([os.getenv("GEMINI_API_KEY", "")] if os.getenv("GEMINI_API_KEY") else []))
++
+     # ── Model Selection ───────────────────────────────────────────────────────
+     # Explorer & Evaluator — high-context DOM reasoning
+     EXPLORER_MODEL:  str = "gemini-3.5-flash"
+@@ -37,7 +48,9 @@ class Config:
      # ── Playwright MCP Server ─────────────────────────────────────────────────
      MCP_COMMAND: str       = "npx"
      MCP_ARGS: List[str]    = field(default_factory=lambda: [
@@ -309,6 +665,17 @@ index 947cca7..da83598 100644
      ])
  
      # ── Scanner Behaviour ─────────────────────────────────────────────────────
+@@ -57,8 +70,8 @@ class Config:
+     def validate(self):
+         """Raise early if critical config is missing."""
+         missing = []
+-        if not self.GEMINI_API_KEY:
+-            missing.append("GEMINI_API_KEY")
++        if not self.GEMINI_API_KEYS:
++            missing.append("GEMINI_API_KEY (or GEMINI_API_KEYS)")
+         if not self.GROQ_API_KEY:
+             missing.append("GROQ_API_KEY")
+         if not self.TARGET_URL:
 diff --git a/mcp_client.py b/mcp_client.py
 index 787c85a..cbc68c4 100644
 --- a/mcp_client.py
@@ -456,6 +823,97 @@ index 787c85a..cbc68c4 100644
          try:
              return json.loads(text)
          except (json.JSONDecodeError, TypeError):
+diff --git a/memory/state_graph.py b/memory/state_graph.py
+index e41b034..475efc2 100644
+--- a/memory/state_graph.py
++++ b/memory/state_graph.py
+@@ -32,16 +32,23 @@ logger = logging.getLogger("StateGraph")
+ 
+ @dataclass
+ class ViewNode:
+-    url:           str
+-    dom_summary:   str          # LLM-generated 1-2 sentence summary of the page
+-    session_state: dict         # cookies / localStorage snapshot at this view
+-    node_id:       str = ""     # SHA-256(url + dom_summary) — set in __post_init__
+-    visit_count:   int = 0
++    url:                   str
++    dom_summary:           str          # LLM-generated 1-2 sentence summary — DISPLAY ONLY
++    session_state:         dict         # cookies / localStorage snapshot at this view
++    structural_fingerprint: str = ""    # SHA-256 of the raw accessibility-tree
++                                         # snapshot — used for node identity.
++                                         # NOT the LLM summary: that text varies
++                                         # between calls even for the identical
++                                         # page (LLM non-determinism), which
++                                         # previously minted a near-duplicate
++                                         # node on almost every single step.
++    node_id:               str = ""     # SHA-256(url + structural_fingerprint)
++    visit_count:           int = 0
+ 
+     def __post_init__(self):
+         if not self.node_id:
+             digest = hashlib.sha256(
+-                (self.url + self.dom_summary).encode()
++                (self.url + self.structural_fingerprint).encode()
+             ).hexdigest()[:16]
+             self.node_id = digest
+ 
+@@ -166,9 +173,19 @@ class StateGraph:
+                     url          TEXT,
+                     dom_summary  TEXT,
+                     session_state TEXT,
++                    structural_fingerprint TEXT DEFAULT '',
+                     visit_count  INTEGER DEFAULT 0
+                 )
+             """)
++            # CREATE TABLE IF NOT EXISTS won't retroactively add a new
++            # column to a DB file that already existed with the old
++            # schema — migrate it explicitly so this doesn't just crash
++            # with "no such column" on anyone's pre-existing .db file.
++            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
++            if "structural_fingerprint" not in existing_cols:
++                conn.execute(
++                    "ALTER TABLE nodes ADD COLUMN structural_fingerprint TEXT DEFAULT ''"
++                )
+             conn.execute("""
+                 CREATE TABLE IF NOT EXISTS edges (
+                     source_id   TEXT,
+@@ -183,13 +200,17 @@ class StateGraph:
+ 
+     def _load_from_db(self):
+         with sqlite3.connect(self._db_path) as conn:
+-            for row in conn.execute("SELECT * FROM nodes"):
+-                node_id, url, dom_summary, session_state, visit_count = row
++            for row in conn.execute(
++                "SELECT node_id, url, dom_summary, session_state, "
++                "structural_fingerprint, visit_count FROM nodes"
++            ):
++                node_id, url, dom_summary, session_state, fingerprint, visit_count = row
+                 self.graph.add_node(node_id,
+                     node_id=node_id,
+                     url=url,
+                     dom_summary=dom_summary,
+                     session_state=json.loads(session_state or "{}"),
++                    structural_fingerprint=fingerprint or "",
+                     visit_count=visit_count,
+                 )
+ 
+@@ -205,11 +226,13 @@ class StateGraph:
+         with sqlite3.connect(self._db_path) as conn:
+             conn.execute("""
+                 INSERT OR REPLACE INTO nodes
+-                    (node_id, url, dom_summary, session_state, visit_count)
+-                VALUES (?, ?, ?, ?, ?)
++                    (node_id, url, dom_summary, session_state,
++                     structural_fingerprint, visit_count)
++                VALUES (?, ?, ?, ?, ?, ?)
+             """, (
+                 node.node_id, node.url, node.dom_summary,
+-                json.dumps(node.session_state), node.visit_count,
++                json.dumps(node.session_state), node.structural_fingerprint,
++                node.visit_count,
+             ))
+             conn.commit()
+ 
 diff --git a/memory/vector_store.py b/memory/vector_store.py
 index ef77039..1ef2b0c 100644
 --- a/memory/vector_store.py

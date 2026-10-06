@@ -32,16 +32,17 @@ logger = logging.getLogger("StateGraph")
 
 @dataclass
 class ViewNode:
-    url:           str
-    dom_summary:   str          # LLM-generated 1-2 sentence summary of the page
-    session_state: dict         # cookies / localStorage snapshot at this view
-    node_id:       str = ""     # SHA-256(url + dom_summary) — set in __post_init__
-    visit_count:   int = 0
+    url:                    str
+    dom_summary:            str          # LLM-generated summary for display
+    session_state:          dict         # cookies / localStorage snapshot at this view
+    structural_fingerprint: str = ""     # Hash of the raw accessibility-tree snapshot
+    node_id:                str = ""     # SHA-256(url + structural_fingerprint)
+    visit_count:            int = 0
 
     def __post_init__(self):
         if not self.node_id:
             digest = hashlib.sha256(
-                (self.url + self.dom_summary).encode()
+                (self.url + self.structural_fingerprint).encode()
             ).hexdigest()[:16]
             self.node_id = digest
 
@@ -166,9 +167,15 @@ class StateGraph:
                     url          TEXT,
                     dom_summary  TEXT,
                     session_state TEXT,
+                    structural_fingerprint TEXT DEFAULT '',
                     visit_count  INTEGER DEFAULT 0
                 )
             """)
+            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(nodes)")}
+            if "structural_fingerprint" not in existing_cols:
+                conn.execute(
+                    "ALTER TABLE nodes ADD COLUMN structural_fingerprint TEXT DEFAULT ''"
+                )
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS edges (
                     source_id   TEXT,
@@ -183,13 +190,17 @@ class StateGraph:
 
     def _load_from_db(self):
         with sqlite3.connect(self._db_path) as conn:
-            for row in conn.execute("SELECT * FROM nodes"):
-                node_id, url, dom_summary, session_state, visit_count = row
+            for row in conn.execute(
+                "SELECT node_id, url, dom_summary, session_state, "
+                "structural_fingerprint, visit_count FROM nodes"
+            ):
+                node_id, url, dom_summary, session_state, fingerprint, visit_count = row
                 self.graph.add_node(node_id,
                     node_id=node_id,
                     url=url,
                     dom_summary=dom_summary,
                     session_state=json.loads(session_state or "{}"),
+                    structural_fingerprint=fingerprint or "",
                     visit_count=visit_count,
                 )
 
@@ -205,11 +216,13 @@ class StateGraph:
         with sqlite3.connect(self._db_path) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO nodes
-                    (node_id, url, dom_summary, session_state, visit_count)
-                VALUES (?, ?, ?, ?, ?)
+                    (node_id, url, dom_summary, session_state,
+                     structural_fingerprint, visit_count)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 node.node_id, node.url, node.dom_summary,
-                json.dumps(node.session_state), node.visit_count,
+                json.dumps(node.session_state), node.structural_fingerprint,
+                node.visit_count,
             ))
             conn.commit()
 

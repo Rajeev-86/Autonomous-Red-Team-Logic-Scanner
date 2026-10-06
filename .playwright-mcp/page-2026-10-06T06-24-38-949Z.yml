@@ -1,0 +1,39 @@
+- generic [active]:
+  - dialog "cookieconsent" [ref=e1]:
+    - generic [ref=e2]:
+      - text: This website uses fruit cookies to ensure you get the juiciest tracking experience.
+      - button "learn more about cookies" [ref=e3] [cursor=pointer]: But me wait!
+    - button "dismiss cookie message" [ref=e5] [cursor=pointer]: Me want it!
+  - generic [ref=e9]:
+    - generic [ref=e12]:
+      - button "Open Sidenav" [ref=e13] [cursor=pointer]:
+        - img [aria-hidden] [ref=e14]: menu
+      - button "Back to homepage" [ref=e17]:
+        - generic [ref=e19]:
+          - img "OWASP Juice Shop" [ref=e20]
+          - generic [ref=e21]: OWASP Juice Shop
+      - generic "Click to search" [ref=e25]:
+        - button "Open search" [ref=e26] [cursor=pointer]:
+          - img [aria-hidden] [ref=e27]: search
+        - generic:
+          - img [aria-hidden] [ref=e30]: search
+          - textbox [ref=e31]
+          - button "Close search" [ref=e32] [cursor=pointer]:
+            - img [aria-hidden] [ref=e33]: close
+      - generic [ref=e36]:
+        - button "Show the shopping cart" [ref=e37]:
+          - img [aria-hidden] [ref=e38]: shopping_cart
+          - generic: "0"
+        - button "Language selection menu" [ref=e42]:
+          - img [aria-hidden] [ref=e43]: language
+    - main [ref=e47]:
+      - generic [ref=e48]: All Products
+      - group [ref=e50]:
+        - generic [ref=e52]:
+          - generic [ref=e53]:
+            - generic [aria-hidden] [ref=e54]: "Items per page:"
+            - generic [ref=e55]: "15"
+          - generic [ref=e56]:
+            - status [ref=e57]: 0 of 0
+            - button "Previous page" [disabled] [ref=e58]
+            - button "Next page" [disabled] [ref=e63]

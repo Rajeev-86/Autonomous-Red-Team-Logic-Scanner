@@ -1,0 +1,206 @@
+- generic:
+  - dialog "cookieconsent" [ref=e1]:
+    - generic [ref=e2]:
+      - text: This website uses fruit cookies to ensure you get the juiciest tracking experience.
+      - button "learn more about cookies" [ref=e3] [cursor=pointer]: But me wait!
+    - button "dismiss cookie message" [ref=e5] [cursor=pointer]: Me want it!
+  - generic [ref=e9]:
+    - generic [ref=e12]:
+      - button [ref=e69] [cursor=pointer]:
+        - img [aria-hidden] [ref=e14]: menu
+      - button [ref=e70]:
+        - generic [ref=e18]: OWASP Juice Shop
+      - generic [ref=e72]:
+        - button [ref=e73] [cursor=pointer]:
+          - img [aria-hidden] [ref=e27]: search
+        - img [aria-hidden] [ref=e30]: search
+        - textbox [ref=e31]
+        - button [ref=e74] [cursor=pointer]:
+          - img [aria-hidden] [ref=e33]: close
+      - generic [ref=e36]:
+        - button [ref=e75]:
+          - img [aria-hidden] [ref=e38]: shopping_cart
+          - generic [ref=e39]: "0"
+        - button [ref=e76]:
+          - img [aria-hidden] [ref=e43]: language
+    - main [ref=e47]:
+      - generic [ref=e48]: All Products
+      - generic [ref=e77]:
+        - article [ref=e80]:
+          - button [ref=e81]:
+            - img [ref=e83] [cursor=pointer]
+            - generic [ref=e84]: Apple Juice (1000ml)
+          - generic [ref=e86]:
+            - generic [ref=e87]: 1.99¤
+            - button [ref=e88]:
+              - img [aria-hidden] [ref=e89]: add_shopping_cart
+              - generic [ref=e90]: Add to Basket
+        - article [ref=e95]:
+          - button [ref=e96]:
+            - img [ref=e98] [cursor=pointer]
+            - generic [ref=e99]: Apple Pomace
+          - generic [ref=e101]:
+            - generic [ref=e102]: 0.89¤
+            - button [ref=e103]:
+              - img [aria-hidden] [ref=e104]: add_shopping_cart
+              - generic [ref=e105]: Add to Basket
+        - article [ref=e110]:
+          - button [ref=e111]:
+            - img [ref=e113] [cursor=pointer]
+            - generic [ref=e114]: Banana Juice (1000ml)
+          - generic [ref=e116]:
+            - generic [ref=e117]: 1.99¤
+            - button [ref=e118]:
+              - img [aria-hidden] [ref=e119]: add_shopping_cart
+              - generic [ref=e120]: Add to Basket
+        - article [ref=e125]:
+          - button [ref=e126]:
+            - img [ref=e128] [cursor=pointer]
+            - generic [ref=e129]: Basil Smoothie
+          - generic [ref=e131]:
+            - generic [ref=e132]: 2.99¤
+            - button [ref=e133]:
+              - img [aria-hidden] [ref=e134]: add_shopping_cart
+              - generic [ref=e135]: Add to Basket
+        - article [ref=e140]:
+          - button [ref=e141]:
+            - img [ref=e143] [cursor=pointer]
+            - generic [ref=e144]: Berry Juice (1000ml)
+          - generic [ref=e146]:
+            - generic [ref=e147]: 3.49¤
+            - button [ref=e148]:
+              - img [aria-hidden] [ref=e149]: add_shopping_cart
+              - generic [ref=e150]: Add to Basket
+        - article [ref=e155]:
+          - complementary [ref=e156]: Only 1 left
+          - button [ref=e157]:
+            - img [ref=e159] [cursor=pointer]
+            - generic [ref=e160]: Best Juice Shop Salesman Artwork
+          - generic [ref=e162]:
+            - generic [ref=e163]: 5000¤
+            - button [ref=e164]:
+              - img [aria-hidden] [ref=e165]: add_shopping_cart
+              - generic [ref=e166]: Add to Basket
+        - article [ref=e171]:
+          - button [ref=e172]:
+            - img [ref=e174] [cursor=pointer]
+            - generic [ref=e175]: Bragă (500ml)
+          - generic [ref=e177]:
+            - generic [ref=e178]: 2.49¤
+            - button [ref=e179]:
+              - img [aria-hidden] [ref=e180]: add_shopping_cart
+              - generic [ref=e181]: Add to Basket
+        - article [ref=e186]:
+          - button [ref=e187]:
+            - img [ref=e189] [cursor=pointer]
+            - generic [ref=e190]: Carrot Juice (1000ml)
+          - generic [ref=e192]:
+            - generic [ref=e193]: 2.99¤
+            - button [ref=e194]:
+              - img [aria-hidden] [ref=e195]: add_shopping_cart
+              - generic [ref=e196]: Add to Basket
+        - article [ref=e201]:
+          - button [ref=e202]:
+            - img [ref=e204] [cursor=pointer]
+            - generic [ref=e205]: Dragonfruit Juice (500ml)
+          - generic [ref=e207]:
+            - generic [ref=e208]: 3.99¤
+            - button [ref=e209]:
+              - img [aria-hidden] [ref=e210]: add_shopping_cart
+              - generic [ref=e211]: Add to Basket
+        - article [ref=e216]:
+          - button [ref=e217]:
+            - img [ref=e219] [cursor=pointer]
+            - generic [ref=e220]: Eggfruit Juice (500ml)
+          - generic [ref=e222]:
+            - generic [ref=e223]: 8.99¤
+            - button [ref=e224]:
+              - img [aria-hidden] [ref=e225]: add_shopping_cart
+              - generic [ref=e226]: Add to Basket
+        - article [ref=e231]:
+          - button [ref=e232]:
+            - img [ref=e234] [cursor=pointer]
+            - generic [ref=e235]: Elderflower Cordial (500ml)
+          - generic [ref=e237]:
+            - generic [ref=e238]: 3.29¤
+            - button [ref=e239]:
+              - img [aria-hidden] [ref=e240]: add_shopping_cart
+              - generic [ref=e241]: Add to Basket
+        - article [ref=e246]:
+          - button [ref=e247]:
+            - img [ref=e249] [cursor=pointer]
+            - generic [ref=e250]: Fruit Press
+          - generic [ref=e252]:
+            - generic [ref=e253]: 89.99¤
+            - button [ref=e254]:
+              - img [aria-hidden] [ref=e255]: add_shopping_cart
+              - generic [ref=e256]: Add to Basket
+        - article [ref=e261]:
+          - button [ref=e262]:
+            - img [ref=e264] [cursor=pointer]
+            - generic [ref=e265]: Grape Juice (1000ml)
+          - generic [ref=e267]:
+            - generic [ref=e268]: 2.99¤
+            - button [ref=e269]:
+              - img [aria-hidden] [ref=e270]: add_shopping_cart
+              - generic [ref=e271]: Add to Basket
+        - article [ref=e276]:
+          - button [ref=e277]:
+            - img [ref=e279] [cursor=pointer]
+            - generic [ref=e280]: Green Smoothie
+          - generic [ref=e282]:
+            - generic [ref=e283]: 1.99¤
+            - button [ref=e284]:
+              - img [aria-hidden] [ref=e285]: add_shopping_cart
+              - generic [ref=e286]: Add to Basket
+        - article [ref=e291]:
+          - complementary [ref=e292]: Only 1 left
+          - button [ref=e293]:
+            - img [ref=e295] [cursor=pointer]
+            - generic [ref=e296]: Juice Shop "Permafrost" 2020 Edition
+          - generic [ref=e298]:
+            - generic [ref=e299]: 9999.99¤
+            - button [ref=e300]:
+              - img [aria-hidden] [ref=e301]: add_shopping_cart
+              - generic [ref=e302]: Add to Basket
+        - article [ref=e307]:
+          - button [ref=e308]:
+            - img [ref=e310] [cursor=pointer]
+            - generic [ref=e311]: Lemon Juice (500ml)
+          - generic [ref=e313]:
+            - generic [ref=e314]: 2.99¤
+            - button [ref=e315]:
+              - img [aria-hidden] [ref=e316]: add_shopping_cart
+              - generic [ref=e317]: Add to Basket
+      - group [ref=e50]:
+        - generic [ref=e52]:
+          - generic [ref=e53]:
+            - generic [aria-hidden] [ref=e54]: "Items per page:"
+            - combobox [ref=e324] [cursor=pointer]:
+              - generic [ref=e325]: "16"
+          - generic [ref=e56]:
+            - status [ref=e57]: 1 – 16 of 46
+            - button [disabled] [ref=e333]
+            - button [ref=e334] [cursor=pointer]
+  - dialog [ref=e338]:
+    - generic [ref=e341]:
+      - heading "Welcome to OWASP Juice Shop!" [level=1] [ref=e342]
+      - generic [ref=e343]:
+        - paragraph [ref=e344]:
+          - text: Being a web application with a vast number of intended security vulnerabilities, the
+          - strong [ref=e345]: OWASP Juice Shop
+          - text: "is supposed to be the opposite of a best practice or template application for web developers: It is an awareness, training, demonstration and exercise tool for security risks in modern web applications. The"
+          - strong [ref=e346]: OWASP Juice Shop
+          - text: is an open-source project hosted by the non-profit
+          - link "Open Worldwide Application Security Project (OWASP)" [active] [ref=e347] [cursor=pointer]:
+            - /url: https://owasp.org
+          - text: and is developed and maintained by volunteers. Check out the link below for more information and documentation on the project.
+        - heading [level=1] [ref=e348]:
+          - link "https://owasp-juice.shop" [ref=e349] [cursor=pointer]:
+            - /url: https://owasp-juice.shop
+      - generic [ref=e350]:
+        - button [ref=e351]:
+          - img [aria-hidden] [ref=e352]: school
+        - button "Close Welcome Banner" [ref=e355] [cursor=pointer]:
+          - img [aria-hidden] [ref=e356]: visibility_off
+          - generic [ref=e357]: Dismiss
