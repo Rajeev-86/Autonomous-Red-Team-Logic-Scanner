@@ -87,18 +87,15 @@ class PlaywrightMCPClient:
 
     async def click(self, ref: str) -> dict:
         """Click an element identified by its accessibility ref (e.g. 'e12')."""
-        return await self._call("browser_click", {"ref": ref})
+        return await self._call("browser_click", {"target": ref})
 
     async def type_text(self, ref: str, text: str, submit: bool = False) -> dict:
         """Type text into an input field. Optionally press Enter to submit."""
-        result = await self._call("browser_type", {"ref": ref, "text": text})
-        if submit:
-            await self._call("browser_press_key", {"key": "Enter"})
-        return result
+        return await self._call("browser_type", {"target": ref, "text": text, "submit": submit})
 
     async def select_option(self, ref: str, value: str) -> dict:
         """Select a dropdown option by value."""
-        return await self._call("browser_select_option", {"ref": ref, "value": value})
+        return await self._call("browser_select_option", {"target": ref, "values": [value]})
 
     async def get_current_url(self) -> str:
         """Return the URL currently loaded in the browser."""
