@@ -71,7 +71,6 @@ Respond with ONLY a JSON object:
 {{
   "action":    "click|type|navigate|done",
   "ref":       "<element ref, if click/type>",
-  "description": "<human-readable description of element, if click>",
   "text":      "<text to type, if action is type>",
   "url":       "<URL to navigate to, if action is navigate>",
   "reasoning": "<one-sentence justification>"
@@ -161,7 +160,7 @@ class ExplorerAgent(BaseAgent):
             )
 
             prev_node_id = new_node_id
-            await self._execute_action(action)
+            await self._execute_action(action, page_data.get("interactive_elements", []))
             await self.browser.wait_for_load(timeout_ms=2000)
 
             # Include same-URL structural changes such as SPA dialogs.
@@ -229,20 +228,26 @@ class ExplorerAgent(BaseAgent):
             logger.error("Next-action selection failed: %s", exc)
             return None
 
-    async def _execute_action(self, action: dict) -> None:
+    async def _execute_action(self, action: dict, elements: list[dict]) -> None:
         """Dispatch a parsed action dict to the MCP browser client."""
         atype = action.get("action")
+        
+        def _get_element_label(ref: str) -> str:
+            for e in elements:
+                if e.get("ref") == ref:
+                    return e.get("label") or e.get("type") or ""
+            return ""
+
         if atype == "click":
             ref = action.get("ref", "")
-            description = action.get("description", "")
             if ref:
-                await self.browser.click(ref, description)
+                await self.browser.click(ref, _get_element_label(ref))
 
         elif atype == "type":
             ref  = action.get("ref", "")
             text = action.get("text", "")
             if ref and text:
-                await self.browser.type_text(ref, text)
+                await self.browser.type_text(ref, text, _get_element_label(ref))
 
         elif atype == "navigate":
             url = action.get("url", "")
