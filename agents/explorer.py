@@ -71,6 +71,7 @@ Respond with ONLY a JSON object:
 {{
   "action":    "click|type|navigate|done",
   "ref":       "<element ref, if click/type>",
+  "description": "<human-readable description of element, if click>",
   "text":      "<text to type, if action is type>",
   "url":       "<URL to navigate to, if action is navigate>",
   "reasoning": "<one-sentence justification>"
@@ -233,8 +234,9 @@ class ExplorerAgent(BaseAgent):
         atype = action.get("action")
         if atype == "click":
             ref = action.get("ref", "")
+            description = action.get("description", "")
             if ref:
-                await self.browser.click(ref)
+                await self.browser.click(ref, description)
 
         elif atype == "type":
             ref  = action.get("ref", "")

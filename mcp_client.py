@@ -85,9 +85,9 @@ class PlaywrightMCPClient:
         result = await self._call("browser_snapshot", {})
         return result if isinstance(result, str) else json.dumps(result)
 
-    async def click(self, ref: str) -> dict:
+    async def click(self, ref: str, description: str = "") -> dict:
         """Click an element identified by its accessibility ref (e.g. 'e12')."""
-        return await self._call("browser_click", {"target": ref})
+        return await self._call("browser_click", {"target": ref, "description": description})
 
     async def type_text(self, ref: str, text: str, submit: bool = False) -> dict:
         """Type text into an input field. Optionally press Enter to submit."""
