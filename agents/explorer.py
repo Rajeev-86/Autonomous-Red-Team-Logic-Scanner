@@ -60,7 +60,7 @@ You are cataloguing the functionality of a web application you have
 permission to test, by clicking through it like a QA engineer would.
 You have already visited these URLs:
 {visited_urls}
-
+{feedback}
 Current page summary: {page_summary}
 Available interactive elements:
 {elements}
@@ -100,6 +100,9 @@ class ExplorerAgent(BaseAgent):
         self.vector_store = vector_store
         self._visited_urls: set[str] = set()
         self._current_node_id: Optional[str] = None
+        self._failed_refs: dict[str, int] = {}     # ref -> consecutive no-op count
+        self._blacklisted_refs: set[str] = set()   # refs given up on entirely
+        self._last_action_feedback: str = ""       # fed into the next prompt
 
     # ── Main exploration loop ──────────────────────────────────────────────────
 
@@ -175,18 +178,51 @@ class ExplorerAgent(BaseAgent):
             )
             target_id = self.state_graph.add_node(target_node)
 
+            ref = action.get("ref", "")
+
             if target_id != prev_node_id:
                 edge = ActionEdge(
                     source_id=prev_node_id,
                     target_id=target_id,
                     action_type=action.get("action", "click"),
-                    action_ref=action.get("ref", action.get("url", "")),
+                    action_ref=ref or action.get("url", ""),
                     payload={},
                 )
                 try:
                     self.state_graph.add_edge(edge)
                 except ValueError:
-                    pass  # nodes not in graph yet — skip
+                    pass
+
+                if ref:
+                    self._failed_refs.pop(ref, None)
+                self._last_action_feedback = ""
+
+            elif ref:
+                fail_count = self._failed_refs.get(ref, 0) + 1
+                self._failed_refs[ref] = fail_count
+                logger.warning(
+                    "Action on ref=%s had NO visible effect (%d consecutive "
+                    "time(s)) — it may be hidden, disabled, or covered by "
+                    "another element (e.g. a modal on top of it).",
+                    ref, fail_count,
+                )
+                self._last_action_feedback = (
+                    f"IMPORTANT: Your last action ({action.get('action')} on "
+                    f"ref={ref}) did NOT change the page at all. That element "
+                    f"may be hidden, disabled, or covered by another element "
+                    f"(like a modal dialog on top of it) — if there's another "
+                    f"dialog or overlay visible, dismiss THAT one first. "
+                    f"Try a DIFFERENT element this time — do not repeat "
+                    f"ref={ref}."
+                )
+                if fail_count >= 3:
+                    self._blacklisted_refs.add(ref)
+                    logger.warning(
+                        "ref=%s failed %d times in a row — blacklisting it "
+                        "for the rest of this run.", ref, fail_count,
+                    )
+            else:
+                self._last_action_feedback = ""
 
         logger.info(
             "Exploration complete. %s", self.state_graph.summary()
@@ -212,12 +248,19 @@ class ExplorerAgent(BaseAgent):
         """Use Gemini to decide the next navigation action."""
         # Filter elements already explored or low priority
         candidates = sorted(
-            [e for e in elements if e.get("priority", 0) >= 2],
+            [
+                e for e in elements
+                if e.get("priority", 0) >= 2
+                and e.get("ref") not in self._blacklisted_refs
+            ],
             key=lambda e: -e.get("priority", 0),
         )[:10]
 
+        feedback = f"\n{self._last_action_feedback}\n" if self._last_action_feedback else ""
+
         prompt = _PICK_NEXT_ACTION_PROMPT.format(
             visited_urls="\n".join(sorted(self._visited_urls)[-20:]),
+            feedback=feedback,
             page_summary=page_summary,
             elements=str(candidates),
         )
@@ -228,34 +271,36 @@ class ExplorerAgent(BaseAgent):
             logger.error("Next-action selection failed: %s", exc)
             return None
 
-    async def _execute_action(self, action: dict, elements: list[dict]) -> None:
+    async def _execute_action(self, action: dict, elements: list[dict]):
         """Dispatch a parsed action dict to the MCP browser client."""
         atype = action.get("action")
-        
+
         def _get_element_label(ref: str) -> str:
             for e in elements:
                 if e.get("ref") == ref:
                     return e.get("label") or e.get("type") or ""
             return ""
 
+        result = None
         if atype == "click":
             ref = action.get("ref", "")
             if ref:
-                await self.browser.click(ref, _get_element_label(ref))
+                result = await self.browser.click(ref, _get_element_label(ref))
 
         elif atype == "type":
             ref  = action.get("ref", "")
             text = action.get("text", "")
             if ref and text:
-                await self.browser.type_text(ref, text, _get_element_label(ref))
+                result = await self.browser.type_text(ref, text, _get_element_label(ref))
 
         elif atype == "navigate":
             url = action.get("url", "")
             if url:
-                await self.browser.navigate(url)
+                result = await self.browser.navigate(url)
 
-        # Brief pause between actions to avoid overwhelming the app
+        logger.debug("Action result: %s", str(result)[:300])
         await asyncio.sleep(0.5)
+        return result
 
     # ── Network ingestion ──────────────────────────────────────────────────────
 
