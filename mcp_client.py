@@ -86,16 +86,24 @@ class PlaywrightMCPClient:
         return result if isinstance(result, str) else json.dumps(result)
 
     async def click(self, ref: str, element: str = "") -> dict:
-        """Click an element identified by its accessibility ref (e.g. 'e12')."""
-        return await self._call("browser_click", {"ref": ref, "element": element})
+        """
+        Click an element identified by its accessibility ref (e.g. 'e12').
+
+        The wire parameter is "target", not "ref" — confirmed directly
+        against this server's own schema via list_tools() (v0.0.83). "ref"
+        doesn't exist in this version's schema at all; every prior attempt
+        using it failed Zod validation with "expected string, received
+        undefined → at target", which is exactly what we were seeing.
+        """
+        return await self._call("browser_click", {"target": ref, "element": element})
 
     async def type_text(self, ref: str, text: str, element: str = "", submit: bool = False) -> dict:
         """Type text into an input field. Optionally press Enter to submit."""
-        return await self._call("browser_type", {"ref": ref, "text": text, "element": element, "submit": submit})
+        return await self._call("browser_type", {"target": ref, "text": text, "element": element, "submit": submit})
 
     async def select_option(self, ref: str, value: str, element: str = "") -> dict:
         """Select a dropdown option by value."""
-        return await self._call("browser_select_option", {"ref": ref, "values": [value], "element": element})
+        return await self._call("browser_select_option", {"target": ref, "values": [value], "element": element})
 
     async def get_current_url(self) -> str:
         """Return the URL currently loaded in the browser."""

@@ -27,6 +27,10 @@ from mcp_client import PlaywrightMCPClient
 
 logger = logging.getLogger("Explorer")
 
+_OVERLAY_DISMISS_KEYWORDS = (
+    "dismiss", "close", "got it", "accept", "i agree", "continue",
+    "skip", "no thanks", "ok",
+)
 
 # ── Prompt templates ──────────────────────────────────────────────────────────
 
@@ -147,10 +151,32 @@ class ExplorerAgent(BaseAgent):
             self._current_node_id = new_node_id
 
             # ── Decide next action ─────────────────────────────────────────
-            action = await self._pick_next_action(
-                page_summary=page_data.get("page_summary", ""),
-                elements=page_data.get("interactive_elements", []),
+            elements = page_data.get("interactive_elements", [])
+            logger.debug(
+                "[Step %d] %d elements extracted: %s",
+                step + 1, len(elements),
+                [(e.get("ref"), e.get("label"), e.get("priority")) for e in elements],
             )
+
+            overlay_candidate = self._find_overlay_dismiss_candidate(
+                elements, self._blacklisted_refs
+            )
+            if overlay_candidate:
+                action = {
+                    "action": "click",
+                    "ref": overlay_candidate.get("ref"),
+                    "reasoning": f"Deterministic overlay dismiss: {overlay_candidate.get('label')!r}",
+                }
+                logger.info(
+                    "Pre-empting LLM choice: likely overlay/dismiss button "
+                    "detected (ref=%s, label=%r) — clicking it directly.",
+                    overlay_candidate.get("ref"), overlay_candidate.get("label"),
+                )
+            else:
+                action = await self._pick_next_action(
+                    page_summary=page_data.get("page_summary", ""),
+                    elements=elements,
+                )
 
             if not action or action.get("action") == "done":
                 logger.info("Explorer: done signal at step %d.", step + 1)
@@ -163,7 +189,7 @@ class ExplorerAgent(BaseAgent):
             )
 
             prev_node_id = new_node_id
-            await self._execute_action(action, page_data.get("interactive_elements", []))
+            await self._execute_action(action, elements)
             await self.browser.wait_for_load(timeout_ms=2000)
 
             # Include same-URL structural changes such as SPA dialogs.
@@ -270,6 +296,18 @@ class ExplorerAgent(BaseAgent):
         except Exception as exc:
             logger.error("Next-action selection failed: %s", exc)
             return None
+
+    @staticmethod
+    def _find_overlay_dismiss_candidate(
+        elements: list[dict], blacklisted: set[str],
+    ) -> Optional[dict]:
+        for e in elements:
+            if e.get("ref") in blacklisted:
+                continue
+            label = str(e.get("label", "")).lower()
+            if any(k in label for k in _OVERLAY_DISMISS_KEYWORDS):
+                return e
+        return None
 
     async def _execute_action(self, action: dict, elements: list[dict]):
         """Dispatch a parsed action dict to the MCP browser client."""
