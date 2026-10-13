@@ -29,6 +29,15 @@ _OVERLAY_DISMISS_KEYWORDS = (
     "skip", "no thanks", "ok",
 )
 
+# After filling in several fields on a page, prioritize finding a button
+# like one of these to actually COMPLETE the flow and trigger a real
+# request — visiting a form without ever submitting it produces no API
+# traffic for the Mutator to work with at all.
+_SUBMIT_KEYWORDS = (
+    "register", "submit", "sign in", "log in", "login", "confirm",
+    "checkout", "save", "update", "proceed", "create account",
+)
+
 from agents.base_agent import BaseAgent
 from memory.state_graph import StateGraph, ViewNode, ActionEdge
 from memory.vector_store import VectorStore
@@ -112,6 +121,8 @@ class ExplorerAgent(BaseAgent):
         self._failed_refs: dict[str, int] = {}     # ref -> consecutive no-op count
         self._blacklisted_refs: set[str] = set()   # refs given up on entirely
         self._last_action_feedback: str = ""       # fed into the next prompt
+        self._filled_refs_this_page: set[str] = set()  # 'type' targets on current page
+        self._last_url: Optional[str] = None
 
     # ── Main exploration loop ──────────────────────────────────────────────────
 
