@@ -180,7 +180,14 @@ class PlaywrightMCPClient:
         result = await self._call(
             "browser_evaluate", {"function": f"() => {expression}"}
         )
-        return result.get("result") if isinstance(result, dict) else result
+        # Some MCP responses wrap the value as {"result": ...}; others — e.g.
+        # when the evaluated JS returns a plain object — ARE the value
+        # itself, with no wrapper. Only unwrap when a "result" key is
+        # actually present, so a JS-returned object isn't mistaken for a
+        # wrapper and emptied out via .get("result") -> None.
+        if isinstance(result, dict) and "result" in result:
+            return result["result"]
+        return result
 
     async def get_cookies(self) -> list[dict]:
         """Return all cookies for the current origin (session tokens, CSRF, etc.)."""

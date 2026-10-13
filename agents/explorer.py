@@ -20,6 +20,15 @@ import hashlib
 import logging
 from typing import Optional
 
+# Common labels for first-load overlay dismiss buttons (onboarding dialogs,
+# cookie banners, newsletter popups). A full-page modal backdrop can block
+# EVERY other element's clickability until it's gone, so this is handled
+# deterministically rather than left entirely to LLM judgement.
+_OVERLAY_DISMISS_KEYWORDS = (
+    "dismiss", "close", "got it", "accept", "i agree", "continue",
+    "skip", "no thanks", "ok",
+)
+
 from agents.base_agent import BaseAgent
 from memory.state_graph import StateGraph, ViewNode, ActionEdge
 from memory.vector_store import VectorStore
@@ -27,10 +36,6 @@ from mcp_client import PlaywrightMCPClient
 
 logger = logging.getLogger("Explorer")
 
-_OVERLAY_DISMISS_KEYWORDS = (
-    "dismiss", "close", "got it", "accept", "i agree", "continue",
-    "skip", "no thanks", "ok",
-)
 
 # ── Prompt templates ──────────────────────────────────────────────────────────
 
@@ -169,7 +174,8 @@ class ExplorerAgent(BaseAgent):
                 }
                 logger.info(
                     "Pre-empting LLM choice: likely overlay/dismiss button "
-                    "detected (ref=%s, label=%r) — clicking it directly.",
+                    "detected (ref=%s, label=%r) — clicking it directly "
+                    "instead of spending an LLM call on this decision.",
                     overlay_candidate.get("ref"), overlay_candidate.get("label"),
                 )
             else:
@@ -217,13 +223,20 @@ class ExplorerAgent(BaseAgent):
                 try:
                     self.state_graph.add_edge(edge)
                 except ValueError:
-                    pass
+                    pass  # nodes not in graph yet — skip
 
                 if ref:
                     self._failed_refs.pop(ref, None)
                 self._last_action_feedback = ""
 
             elif ref:
+                # Action produced a bare browser-level result but caused no
+                # detectable change in the page at all — most likely the
+                # target was hidden, disabled, or covered by something else
+                # (e.g. a modal sitting on top of it). This is exactly what
+                # was happening with the cookie banner being stuck behind
+                # the welcome dialog: the click "succeeded" at the protocol
+                # level but never reached its target.
                 fail_count = self._failed_refs.get(ref, 0) + 1
                 self._failed_refs[ref] = fail_count
                 logger.warning(
@@ -254,11 +267,87 @@ class ExplorerAgent(BaseAgent):
             "Exploration complete. %s", self.state_graph.summary()
         )
 
+    @staticmethod
+    def _truncate_preserving_dialogs(snapshot: str, limit: int) -> str:
+        """
+        Truncate the snapshot to `limit` chars, but guarantee any 'dialog'
+        block survives regardless of where the cutoff lands.
+
+        Proven root cause of the stuck-on-Welcome-dialog issue: the old
+        flat snapshot[:6000] cutoff landed mid-way through a 16-item
+        product catalog, hundreds of characters before the Welcome dialog
+        (which appears LAST in DOM order here) was ever reached — so
+        Gemini never saw it across dozens of exploration steps, even
+        though the dialog was blocking every other click at the browser
+        level the whole time. Raising the limit alone isn't a durable fix
+        (a bigger catalog could do the same thing again); explicitly
+        preserving dialog blocks is.
+        """
+        if len(snapshot) <= limit:
+            return snapshot
+
+        lines = snapshot.splitlines()
+        dialog_blocks: list[str] = []
+        i = 0
+        while i < len(lines):
+            stripped = lines[i].lstrip()
+            if stripped.startswith("- dialog"):
+                indent = len(lines[i]) - len(stripped)
+                block = [lines[i]]
+                i += 1
+                while i < len(lines):
+                    nxt_stripped = lines[i].lstrip()
+                    nxt_indent = len(lines[i]) - len(nxt_stripped)
+                    if nxt_stripped and nxt_indent <= indent:
+                        break
+                    block.append(lines[i])
+                    i += 1
+                dialog_blocks.append("\n".join(block))
+            else:
+                i += 1
+
+        truncated = snapshot[:limit]
+        missing = [b for b in dialog_blocks if b not in truncated]
+        if missing:
+            truncated += (
+                "\n\n# [dialog(s) present further down the page, included "
+                "here so truncation doesn't hide them]\n" + "\n".join(missing)
+            )
+        return truncated
+
+    @staticmethod
+    def _find_overlay_dismiss_candidate(
+        elements: list[dict], blacklisted: set[str],
+    ) -> Optional[dict]:
+        """
+        Look for a likely dismiss/close/accept button among the elements
+        Gemini already extracted, matching on label text directly rather
+        than relying on Gemini's own prioritisation. A first-load overlay
+        (onboarding dialog, cookie banner, newsletter popup) is common
+        enough — and blocking enough, since its backdrop can intercept
+        clicks across the WHOLE page — that it's worth short-circuiting
+        straight to it instead of leaving the choice to chance.
+
+        Skips already-blacklisted refs so that if there are TWO stacked
+        overlays (e.g. a welcome dialog on top of a cookie banner — exactly
+        what's visible in this target), losing the first one to the
+        failure-tracking blacklist doesn't stop this from finding the next.
+        """
+        for e in elements:
+            if e.get("ref") in blacklisted:
+                continue
+            label = str(e.get("label", "")).lower()
+            if any(k in label for k in _OVERLAY_DISMISS_KEYWORDS):
+                return e
+        return None
+
     # ── LLM helpers ───────────────────────────────────────────────────────────
 
     async def _analyse_page(self, snapshot: str) -> Optional[dict]:
         """Use Gemini to summarise the current page and extract elements."""
-        prompt = _SUMMARISE_PAGE_PROMPT.format(snapshot=snapshot[:6000])
+        prompt = _SUMMARISE_PAGE_PROMPT.format(
+            snapshot=self._truncate_preserving_dialogs(snapshot, limit=20000)
+        )
         try:
             raw = await self._gemini_generate(prompt, model=self.config_model())
             return self._extract_json(raw)
@@ -272,7 +361,7 @@ class ExplorerAgent(BaseAgent):
         elements: list[dict],
     ) -> Optional[dict]:
         """Use Gemini to decide the next navigation action."""
-        # Filter elements already explored or low priority
+        # Filter elements already explored, low priority, or repeatedly inert
         candidates = sorted(
             [
                 e for e in elements
@@ -296,18 +385,6 @@ class ExplorerAgent(BaseAgent):
         except Exception as exc:
             logger.error("Next-action selection failed: %s", exc)
             return None
-
-    @staticmethod
-    def _find_overlay_dismiss_candidate(
-        elements: list[dict], blacklisted: set[str],
-    ) -> Optional[dict]:
-        for e in elements:
-            if e.get("ref") in blacklisted:
-                continue
-            label = str(e.get("label", "")).lower()
-            if any(k in label for k in _OVERLAY_DISMISS_KEYWORDS):
-                return e
-        return None
 
     async def _execute_action(self, action: dict, elements: list[dict]):
         """Dispatch a parsed action dict to the MCP browser client."""
@@ -336,7 +413,13 @@ class ExplorerAgent(BaseAgent):
             if url:
                 result = await self.browser.navigate(url)
 
+        # Previously discarded entirely — this is the server's own account of
+        # what happened (e.g. Playwright actionability errors like "element
+        # is not visible because X intercepts pointer events"), which is
+        # exactly the ground truth needed to diagnose a silently-inert click.
         logger.debug("Action result: %s", str(result)[:300])
+
+        # Brief pause between actions to avoid overwhelming the app
         await asyncio.sleep(0.5)
         return result
 

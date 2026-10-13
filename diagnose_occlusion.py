@@ -37,6 +37,20 @@ PROBE_JS = """
             isBlocked: topEl !== el,
         };
     }
+
+    // What's actually inside the thing that's blocking everything above?
+    out.backdropPresent = !!document.querySelector('.cdk-overlay-backdrop');
+    out.openDialogs = Array.from(document.querySelectorAll('.cdk-overlay-pane')).map(pane => ({
+        role:      pane.getAttribute('role'),
+        ariaLabel: pane.getAttribute('aria-label'),
+        textPreview: pane.textContent.trim().replace(/\\s+/g, ' ').slice(0, 200),
+        buttons: Array.from(pane.querySelectorAll('button')).map(btn => ({
+            text:      btn.textContent.trim(),
+            ariaLabel: btn.getAttribute('aria-label'),
+            classes:   btn.className || null,
+        })),
+    }));
+
     return out;
 })()
 """
