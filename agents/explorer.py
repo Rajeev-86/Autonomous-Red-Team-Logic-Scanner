@@ -141,6 +141,10 @@ class ExplorerAgent(BaseAgent):
             current_url = await self.browser.get_current_url()
             logger.debug("[Step %d] URL: %s", step + 1, current_url)
 
+            if current_url != self._last_url:
+                self._filled_refs_this_page.clear()
+                self._last_url = current_url
+
             # ── Snapshot & analyse current view ───────────────────────────
             snapshot   = await self.browser.snapshot()
             page_data  = await self._analyse_page(snapshot)
@@ -177,6 +181,11 @@ class ExplorerAgent(BaseAgent):
             overlay_candidate = self._find_overlay_dismiss_candidate(
                 elements, self._blacklisted_refs
             )
+            submit_candidate = (
+                self._find_submit_candidate(elements, self._blacklisted_refs)
+                if len(self._filled_refs_this_page) >= 2 else None
+            )
+
             if overlay_candidate:
                 action = {
                     "action": "click",
@@ -188,6 +197,22 @@ class ExplorerAgent(BaseAgent):
                     "detected (ref=%s, label=%r) — clicking it directly "
                     "instead of spending an LLM call on this decision.",
                     overlay_candidate.get("ref"), overlay_candidate.get("label"),
+                )
+            elif submit_candidate:
+                action = {
+                    "action": "click",
+                    "ref": submit_candidate.get("ref"),
+                    "reasoning": (
+                        f"Deterministic submit: {submit_candidate.get('label')!r} "
+                        f"({len(self._filled_refs_this_page)} field(s) filled on this page)"
+                    ),
+                }
+                logger.info(
+                    "Pre-empting LLM choice: %d field(s) filled on this page — "
+                    "completing the flow via likely submit button (ref=%s, "
+                    "label=%r) instead of navigating away from it.",
+                    len(self._filled_refs_this_page),
+                    submit_candidate.get("ref"), submit_candidate.get("label"),
                 )
             else:
                 action = await self._pick_next_action(
@@ -207,6 +232,8 @@ class ExplorerAgent(BaseAgent):
 
             prev_node_id = new_node_id
             await self._execute_action(action, elements)
+            if action.get("action") == "type" and action.get("ref"):
+                self._filled_refs_this_page.add(action["ref"])
             await self.browser.wait_for_load(timeout_ms=2000)
 
             # Include same-URL structural changes such as SPA dialogs.
@@ -352,6 +379,38 @@ class ExplorerAgent(BaseAgent):
                 return e
         return None
 
+    @staticmethod
+    def _find_submit_candidate(
+        elements: list[dict], blacklisted: set[str],
+    ) -> Optional[dict]:
+        """
+        Look for a likely submit/register/login/checkout button once
+        several fields have been filled in on the current page. Visiting
+        a form's fields without ever clicking its submit button produces
+        no mutating API traffic at all — the scanner's actual job needs
+        real request/response round trips, not just visited pages, so
+        this is worth completing deterministically once a form is clearly
+        underway rather than leaving it to LLM judgement on whether to
+        finish what it started or wander off to a new page.
+        """
+        for e in elements:
+            if e.get("ref") in blacklisted:
+                continue
+            # Keyword-only matching false-positived on a form FIELD whose
+            # descriptive label happened to contain a submit keyword:
+            # "Field to confirm the password" (type=input) matched on
+            # "confirm" and got clicked instead of the real submit button
+            # — 3 timeouts, then permanently blacklisted, which then made
+            # that required field unfillable for the rest of the run and
+            # blocked registration from ever completing at all. A field
+            # you type into is never the button that submits its own form.
+            if e.get("type") in ("input", "select", "form"):
+                continue
+            label = str(e.get("label", "")).lower()
+            if any(k in label for k in _SUBMIT_KEYWORDS):
+                return e
+        return None
+
     # ── LLM helpers ───────────────────────────────────────────────────────────
 
     async def _analyse_page(self, snapshot: str) -> Optional[dict]:
@@ -360,7 +419,21 @@ class ExplorerAgent(BaseAgent):
             snapshot=self._truncate_preserving_dialogs(snapshot, limit=20000)
         )
         try:
-            raw = await self._gemini_generate(prompt, model=self.config_model())
+            # _gemini_generate's default max_tokens (2048) is enough for a
+            # typical page but not a busy one: the forgot-password page hit
+            # it repeatedly (9 consecutive "Could not extract JSON" steps in
+            # one run) because its interactive_elements list is long and
+            # verbose, so the JSON gets cut off mid-array and never
+            # balances its braces. Worse than just a wasted step — when
+            # page_data is None, the loop `continue`s back to re-snapshot
+            # the SAME page with no action taken, so a page that reliably
+            # overflows the token budget can eat the rest of the step
+            # budget in a retry loop instead of ever reaching unvisited
+            # pages (e.g. product detail / basket, which is exactly what
+            # was missing from this run's captured traffic).
+            raw = await self._gemini_generate(
+                prompt, model=self.config_model(), max_tokens=4096
+            )
             return self._extract_json(raw)
         except Exception as exc:
             logger.error("Page analysis failed: %s", exc)
