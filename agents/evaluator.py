@@ -61,8 +61,15 @@ Expected outcome if the check fails: {expected_outcome}
 
 ═══ EVALUATION CRITERIA ═══
 Answer YES only if there is clear, unambiguous evidence the check did NOT hold:
-  - For IDOR: the response contains data clearly belonging to a DIFFERENT user
-    or resource (different name, email, account number, etc.)
+  - For IDOR: the response contains PRIVATE data clearly tied to a DIFFERENT
+    user or account than whoever made the original request — another
+    person's name, email, address, order, basket, payment info, or similar
+    record that implies ownership. Getting a DIFFERENT ID to return
+    DIFFERENT content is not by itself evidence of anything: ask whether an
+    anonymous visitor could reasonably see this exact data anyway through
+    normal use of the app (e.g. a different item in a public product
+    catalog, a different public listing). If so, this is expected behavior,
+    not a broken access check, no matter how different the content is.
   - For PRICE_MANIP: the server accepted and confirmed a zero / negative price
   - For TRUST_VIOLATION: a server-side-only field was accepted and reflected
   - For any: the HTTP status changed from 4xx → 2xx AND content changed meaningfully
@@ -71,6 +78,10 @@ Do NOT mark as a failed check if:
   - The page just looks similar (similarity ≠ data exposure)
   - You only see generic success messages without data
   - The status is still 4xx or the error is unchanged
+  - The "different" data is just another publicly-browsable record (a
+    different product, article, menu item, etc.) rather than another
+    user's private, owned data — swapping an ID on genuinely public data
+    and getting a valid result is normal app behavior, not an IDOR
 
 Respond ONLY with a JSON object:
 {{
