@@ -196,20 +196,29 @@ class RedTeamOrchestrator:
             # Capture baseline state
             pre_snapshot = await browser.snapshot()
 
-            # Register the route intercept with the mutated payload
-            await browser.route_intercept_and_modify(
-                url_pattern=hypothesis.get("endpoint_pattern", "**/*"),
-                modified_body=hypothesis.get("malicious_payload", {}),
-                method=hypothesis.get("method", "POST"),
-            )
-
-            # Trigger the action if we have a UI ref; otherwise reload fires it
-            trigger_ref = hypothesis.get("trigger_ref")
-            if trigger_ref:
-                await browser.click(trigger_ref)
+            mutated_endpoint = hypothesis.get("mutated_endpoint")
+            if mutated_endpoint:
+                # URL-path IDOR (e.g. /api/Products/1 -> /api/Products/2):
+                # there's no body to intercept — the different URL IS the
+                # attack, body is unchanged — so route_intercept_and_modify
+                # would be a no-op here. Fetch the mutated URL for real
+                # instead of mocking a response on the original one.
+                await browser.navigate(mutated_endpoint)
             else:
-                # Re-navigate to trigger the API call naturally
-                await browser.navigate(target_url)
+                # Register the route intercept with the mutated payload
+                await browser.route_intercept_and_modify(
+                    url_pattern=hypothesis.get("endpoint_pattern", "**/*"),
+                    modified_body=hypothesis.get("malicious_payload", {}),
+                    method=hypothesis.get("method", "POST"),
+                )
+
+                # Trigger the action if we have a UI ref; otherwise reload fires it
+                trigger_ref = hypothesis.get("trigger_ref")
+                if trigger_ref:
+                    await browser.click(trigger_ref)
+                else:
+                    # Re-navigate to trigger the API call naturally
+                    await browser.navigate(target_url)
 
             await browser.wait_for_load(timeout_ms=3000)
 
@@ -244,7 +253,8 @@ class RedTeamOrchestrator:
                 return Vulnerability(
                     vuln_type=hypothesis["vuln_type"],
                     cwe_id=hypothesis.get("cwe_id", ""),
-                    endpoint=hypothesis.get("endpoint_pattern", ""),
+                    endpoint=hypothesis.get("mutated_endpoint")
+                             or hypothesis.get("endpoint_pattern", ""),
                     description=hypothesis.get("description", ""),
                     severity=verdict.get("severity", "HIGH"),
                     confidence=verdict.get("confidence", 0.0),
