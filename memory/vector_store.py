@@ -120,8 +120,8 @@ class VectorStore:
             "endpoint":       endpoint,
             "method":         method,
             "response_status": response_status,
-            "has_int_id":     self._has_integer_id(request_body),
-            "has_uuid":       self._has_uuid(request_body),
+            "has_int_id":     self._has_integer_id(request_body) or self._url_has_numeric_id(endpoint),
+            "has_uuid":       self._has_uuid(request_body) or self._url_has_uuid(endpoint),
             "has_price":      self._has_price_field(request_body),
             "has_role":       self._has_role_field(request_body),
             "request_body":   json.dumps(request_body)[:1000],   # Chroma metadata limit
@@ -215,11 +215,32 @@ class VectorStore:
     @staticmethod
     def _has_integer_id(body: dict) -> bool:
         id_keys = {"id", "user_id", "userid", "account_id", "order_id",
-                   "product_id", "resource_id", "owner_id"}
+                   "product_id", "resource_id", "owner_id", "basket_id"}
         return any(
             isinstance(v, int) and _matches(k, id_keys)
             for k, v in _flatten(body).items()
         )
+
+    # Juice Shop's REST API puts the resource ID in the URL PATH, not a
+    # JSON body, for the common case — GET /api/Products/1, GET
+    # /rest/basket/6, etc. — confirmed directly: /api/Products/1 was a
+    # real captured endpoint with an empty/irrelevant request body, so
+    # _has_integer_id(request_body) alone could never see it. Only path
+    # segments are checked (never the query string — a date param like
+    # "?d=Fri%20Oct..." isn't a resource ID and would just be noise).
+    _URL_UUID_RE = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+    )
+
+    @classmethod
+    def _url_has_numeric_id(cls, endpoint: str) -> bool:
+        path = endpoint.split("?", 1)[0]
+        return any(seg.isdigit() for seg in path.split("/") if seg)
+
+    @classmethod
+    def _url_has_uuid(cls, endpoint: str) -> bool:
+        path = endpoint.split("?", 1)[0]
+        return any(cls._URL_UUID_RE.match(seg) for seg in path.split("/") if seg)
 
     @staticmethod
     def _has_uuid(body: dict) -> bool:
@@ -271,13 +292,25 @@ def _flatten(obj: Any, prefix: str = "") -> dict:
     return result
 
 
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
 def _field_name(key: str) -> str:
     """
     Extract the matchable field name from a flattened key, stripping any
     trailing array-index suffix, e.g. "items[0].price" -> "price",
     "user_ids[2]" -> "user_ids".
+
+    Also normalises camelCase/PascalCase to snake_case before lowercasing.
+    Real-world Sequelize/Node.js REST APIs (e.g. Juice Shop's) name fields
+    "ProductId", "BasketId", "UserId" — not "product_id" — and those never
+    matched our snake_case pattern lists at all (different strings even
+    after .lower()); only "UserId" happened to work, via a hand-added
+    "userid" entry in the pattern set. This fixes it at the source instead
+    of special-casing every affected field one at a time.
     """
-    return re.sub(r"\[\d+\]$", "", key.split(".")[-1])
+    leaf = re.sub(r"\[\d+\]$", "", key.split(".")[-1])
+    return _CAMEL_BOUNDARY_RE.sub("_", leaf).lower()
 
 
 def _pluralized_forms(word: str) -> set[str]:
