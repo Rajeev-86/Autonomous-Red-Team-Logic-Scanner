@@ -33,6 +33,7 @@ import logging
 import re
 import uuid
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from agents.base_agent import BaseAgent
 from memory.vector_store import VectorStore
@@ -133,18 +134,83 @@ def _rule_based_mutations(
             mutate(key, val, True, "PRIVILEGE_ESC", "CWE-269",
                    f"Flip {key} to True for privilege escalation")
 
+    # ── URL-path ID mutations (IDOR via resource-ID swap in the path) ───
+    # A separate loop from the body-field one above: an ID like the "1" in
+    # /api/Products/1 was never IN `body` at all — confirmed live, that
+    # exact endpoint reached this function with an empty body, so no
+    # amount of keyword matching on `flat` could ever find it. The body
+    # here stays byte-for-byte unchanged; the URL itself is the attack.
+    for new_url, old_seg, new_seg in _url_id_swaps(endpoint):
+        mutations.append({
+            "vuln_type":        "IDOR",
+            "cwe_id":           "CWE-639",
+            "description":      f"Request {new_url} directly — swap path ID "
+                                 f"{old_seg} -> {new_seg} to access a different resource",
+            "mutated_payload":  copy.deepcopy(body),  # unchanged — the URL is the mutation
+            "mutated_endpoint": new_url,  # tells the Orchestrator to fetch this directly
+                                           # instead of route-intercepting the original
+            "field_changed":    f"url_path:{old_seg}",
+            "expected_outcome": "Server returns data belonging to another resource, "
+                                 "same method, body unchanged.",
+        })
+
     return mutations
 
 
+_URL_ID_SEGMENT_RE = re.compile(r"^\d+$")
+
+
+def _url_id_swaps(endpoint: str) -> list[tuple[str, str, str]]:
+    """
+    For a URL with a bare numeric path segment (e.g. '/api/Products/1'),
+    generate candidate URLs with that segment swapped — the path
+    equivalent of the body-field ID mutations above, and the reason it's
+    needed: most REST APIs (Juice Shop very much included) put the
+    resource ID in the URL path for GETs, never in a JSON body. Only the
+    FIRST qualifying segment is swapped, mirroring "only change VALUES,
+    not shape" from the module docstring's mutation prompt above.
+    """
+    parsed = urlsplit(endpoint)
+    segments = parsed.path.split("/")
+    swaps: list[tuple[str, str, str]] = []
+
+    for i, seg in enumerate(segments):
+        if not _URL_ID_SEGMENT_RE.match(seg):
+            continue
+        val = int(seg)
+        for new_val in (val + 1, 1):
+            if new_val == val:
+                continue
+            new_segments = list(segments)
+            new_segments[i] = str(new_val)
+            new_url = urlunsplit((
+                parsed.scheme, parsed.netloc,
+                "/".join(new_segments), parsed.query, parsed.fragment,
+            ))
+            swaps.append((new_url, seg, str(new_val)))
+        break  # only the first numeric path segment
+
+    return swaps
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
 
 def _field_name(key: str) -> str:
     """
     Extract the matchable field name from a flattened key, stripping any
     trailing array-index suffix, e.g. "items[0].price" -> "price",
     "user_ids[2]" -> "user_ids".
+
+    Also normalises camelCase/PascalCase to snake_case before lowercasing
+    — see the identical fix/comment in memory/vector_store.py, which this
+    duplicates. Real APIs (Juice Shop included) name fields "ProductId",
+    not "product_id", and that never matched our snake_case patterns.
     """
-    return re.sub(r"\[\d+\]$", "", key.split(".")[-1])
+    leaf = re.sub(r"\[\d+\]$", "", key.split(".")[-1])
+    return _CAMEL_BOUNDARY_RE.sub("_", leaf).lower()
 
 
 def _pluralized_forms(word: str) -> set[str]:
@@ -176,7 +242,7 @@ def _matches(key: str, patterns: set[str]) -> bool:
 def _looks_like_id_key(key: str) -> bool:
     id_patterns = {"id", "user_id", "userid", "account_id", "order_id",
                    "resource_id", "owner_id", "profile_id", "customer_id",
-                   "product_id", "item_id", "line_item_id"}
+                   "product_id", "item_id", "line_item_id", "basket_id"}
     return _matches(key, id_patterns)
 
 
