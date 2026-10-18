@@ -1,14 +1,14 @@
 {
   "tool": "Red Team Logic Scanner (Tri-Agent Swarm)",
   "scan_target": "http://localhost:3000",
-  "scan_start": "2026-10-13T10:50:17.747851+00:00",
-  "scan_end": "2026-10-13T10:58:15.099702+00:00",
+  "scan_start": "2026-10-18T12:21:20.764232+00:00",
+  "scan_end": "2026-10-18T12:29:02.854697+00:00",
   "state_graph": {
-    "nodes": 80,
-    "edges": 74,
+    "nodes": 398,
+    "edges": 443,
     "endpoints": 0
   },
-  "total_payloads": 0,
+  "total_payloads": 13,
   "total_confirmed": 0,
   "severity_counts": {},
   "findings": []
