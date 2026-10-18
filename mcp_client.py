@@ -36,11 +36,20 @@ class PlaywrightMCPClient:
             snapshot = await browser.snapshot()
     """
 
+    # browser_network_requests renders lines like:
+    #   "7. [POST] http://localhost:3000/rest/basket/6/checkout => [200] OK"
+    #   "3. [GET] http://localhost:3000/rest/products"                (pending)
+    #   "9. [GET] http://localhost:3000/socket.io => [FAILED] net::ERR_..."
+    _REQUEST_LINE_RE = re.compile(
+        r"^(\d+)\.\s*\[(\w+)\]\s*(\S+)(?:\s*=>\s*\[(\d+|FAILED)\]\s*(.*))?\s*$"
+    )
+
     def __init__(self, headless: bool = True):
         self.headless = headless
         self._session: Optional[ClientSession] = None
         self._stdio_ctx = None
         self._session_ctx = None
+        self._next_request_index = 1  # watermark: only process new requests
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -75,7 +84,14 @@ class PlaywrightMCPClient:
 
     async def navigate(self, url: str) -> dict:
         """Navigate to a URL and return the new page state."""
-        return await self._call("browser_navigate", {"url": url})
+        result = await self._call("browser_navigate", {"url": url})
+        # The server's own navigate() handler calls _clearCollectedArtifacts(),
+        # which zeroes its per-tab _requests array on every navigation —
+        # confirmed in the real v0.0.83 source. Our index watermark has to
+        # reset in lockstep, or every request on every page after the first
+        # permanently looks "already seen" and gets silently dropped.
+        self._next_request_index = 1
+        return result
 
     async def snapshot(self) -> str:
         """
@@ -119,15 +135,95 @@ class PlaywrightMCPClient:
 
     async def get_network_requests(self) -> list[dict]:
         """
-        Return a list of all network requests captured during the current session.
-        Each entry contains: url, method, requestBody, status, responseBody.
+        Return network requests captured SINCE THE LAST call to this method,
+        as clean dicts: {url, method, status, requestBody, responseBody}.
+
+        browser_network_requests does NOT return JSON — confirmed against
+        the real v0.0.83 server source. It returns a numbered, human-
+        readable text listing, and bodies aren't included in it at all;
+        each one requires a SEPARATE browser_network_request call with an
+        index + part ("request-body"/"response-body"). This method does
+        both steps so callers keep getting the plain dict shape they
+        already expect.
         """
-        result = await self._call("browser_network_requests", {})
-        if isinstance(result, list):
-            return result
-        if isinstance(result, dict) and "requests" in result:
-            return result["requests"]
-        return []
+        raw = await self._call("browser_network_requests", {})
+        text = raw if isinstance(raw, str) else json.dumps(raw)
+
+        parsed: list[dict] = []
+        for line in text.splitlines():
+            m = self._REQUEST_LINE_RE.match(line.strip())
+            if not m:
+                continue  # header line, trailing "Note: N static..." line, etc.
+            index_s, method, url, status_s, _status_text = m.groups()
+            index = int(index_s)
+            if index < self._next_request_index:
+                continue  # already handled on a previous step
+            parsed.append({
+                "index": index,
+                "url": url,
+                "method": method,
+                "status": int(status_s) if status_s and status_s.isdigit() else 0,
+                "requestBody": None,
+                "responseBody": "",
+            })
+
+        if not parsed:
+            return []
+
+        self._next_request_index = max(r["index"] for r in parsed) + 1
+
+        # Fetching a body is a whole extra round trip per request, so only
+        # pay for it on things that actually look like API calls.
+        for req in parsed:
+            if not self._looks_like_api_call(req["url"], req["method"]):
+                continue
+            try:
+                body = await self._call(
+                    "browser_network_request",
+                    {"index": req["index"], "part": "request-body"},
+                )
+                if isinstance(body, str) and body.strip():
+                    req["requestBody"] = self._strip_heading(body)
+            except Exception as exc:
+                logger.debug("No request body for #%d: %s", req["index"], exc)
+            try:
+                resp = await self._call(
+                    "browser_network_request",
+                    {"index": req["index"], "part": "response-body"},
+                )
+                if isinstance(resp, str):
+                    req["responseBody"] = self._strip_heading(resp)
+            except Exception as exc:
+                logger.debug("No response body for #%d: %s", req["index"], exc)
+
+        return parsed
+
+    @staticmethod
+    def _looks_like_api_call(url: str, method: str) -> bool:
+        skip_ext = (
+            ".js", ".css", ".png", ".jpg", ".jpeg", ".gif",
+            ".ico", ".woff", ".woff2", ".svg", ".map",
+        )
+        path = url.split("?", 1)[0]
+        if any(path.endswith(ext) for ext in skip_ext):
+            return False
+        return (
+            method in {"POST", "PUT", "PATCH", "DELETE"}
+            or "/rest/" in url
+            or "/api/" in url
+        )
+
+    @staticmethod
+    def _strip_heading(text: str) -> str:
+        """Some MCP tool responses prepend a '### <title>' line before the
+        real content (confirmed for browser_snapshot's 'Page'/'Snapshot'
+        sections and browser_network_request's 'Request body'/'Response
+        body' sections — _call()'s regex only strips a literal '### Result'
+        header, so these pass through untouched otherwise)."""
+        if text.startswith("###"):
+            _, _, rest = text.partition("\n")
+            return rest
+        return text
 
     async def route_intercept_and_modify(
         self,
