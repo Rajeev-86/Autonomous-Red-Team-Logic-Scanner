@@ -39,6 +39,12 @@ from memory.vector_store import VectorStore
 from agents.explorer import ExplorerAgent
 from agents.mutator import MutatorAgent
 from agents.evaluator import EvaluatorAgent
+from agents.injection_checks import (
+    make_xss_payload, check_xss_reflected,
+    SQLI_AUTH_BYPASS_PAYLOAD, SQLI_ERROR_PROBE_PAYLOAD,
+    check_sql_error_signature, check_auth_bypass_success,
+    looks_like_login_field, looks_like_password_field,
+)
 
 logger  = logging.getLogger("Orchestrator")
 console = Console()
@@ -165,6 +171,70 @@ class RedTeamOrchestrator:
                 else:
                     rprint(f"    [dim]✗ Not exploitable[/dim]")
 
+            # ── Phase 4: Injection Testing (XSS / SQLi) ─────────────────────
+            console.rule("[bold magenta]Phase 4 — Injection Testing (XSS / SQLi)")
+
+            pages = list(explorer.page_inputs.items())[:config.MAX_INJECTION_PAGES]
+            rprint(
+                f"  Testing {len(pages)} page(s) with discovered input fields "
+                f"(up to {config.MAX_FIELDS_PER_PAGE} field(s) each)…"
+            )
+
+            for page_url, inputs in pages:
+                fields = inputs[:config.MAX_FIELDS_PER_PAGE]
+
+                for inp in fields:
+                    ref, label = inp.get("ref"), inp.get("label", "")
+                    if not ref:
+                        continue
+
+                    result = await self._test_xss(browser, page_url, ref, label)
+                    if result:
+                        self.confirmed_vulns.append(result)
+                        rprint(
+                            f"    [bold red]🚨 CONFIRMED [{result.severity}]:"
+                            f" {result.cwe_id} at {result.endpoint}[/bold red]"
+                        )
+                    else:
+                        rprint(f"    [dim]✗ XSS not reflected — {label or ref}[/dim]")
+
+                    result = await self._test_sql_error(browser, page_url, ref, label)
+                    if result:
+                        self.confirmed_vulns.append(result)
+                        rprint(
+                            f"    [bold red]🚨 CONFIRMED [{result.severity}]:"
+                            f" {result.cwe_id} at {result.endpoint}[/bold red]"
+                        )
+                    else:
+                        rprint(f"    [dim]✗ No SQL error signature — {label or ref}[/dim]")
+
+                # Auth-bypass only makes sense once per page, on whatever
+                # looks like the login-shaped field, paired with a
+                # password-shaped field if one's present alongside it.
+                login_field = next(
+                    (i for i in fields if looks_like_login_field(i.get("label", ""))),
+                    None,
+                )
+                if login_field and login_field.get("ref"):
+                    password_field = next(
+                        (i for i in fields if looks_like_password_field(i.get("label", ""))),
+                        None,
+                    )
+                    result = await self._test_sql_auth_bypass(
+                        browser, page_url, login_field, password_field
+                    )
+                    if result:
+                        self.confirmed_vulns.append(result)
+                        rprint(
+                            f"    [bold red]🚨 CONFIRMED [{result.severity}]:"
+                            f" {result.cwe_id} at {result.endpoint}[/bold red]"
+                        )
+                    else:
+                        rprint(
+                            f"    [dim]✗ Auth bypass failed — "
+                            f"{login_field.get('label', '')}[/dim]"
+                        )
+
         # ── Final summary ──────────────────────────────────────────────────
         self._print_final_summary()
         return self.confirmed_vulns
@@ -227,16 +297,7 @@ class RedTeamOrchestrator:
             network_requests  = await browser.get_network_requests()
 
             # Build HttpRecord chain for the report
-            http_chain = [
-                HttpRecord(
-                    url=r.get("url", ""),
-                    method=r.get("method", ""),
-                    request_body=self._parse_body(r.get("requestBody")),
-                    status=r.get("status", 0),
-                    response_body=str(r.get("responseBody", ""))[:500],
-                )
-                for r in network_requests[-3:]
-            ]
+            http_chain = self._http_chain_from(network_requests)
 
             # Ask Evaluator
             verdict = await evaluator.evaluate(
@@ -278,6 +339,173 @@ class RedTeamOrchestrator:
                 pass
 
         return None
+
+    # ── Injection testing (Phase 4) ─────────────────────────────────────────
+    # These three probes are intentionally simple and self-contained: each
+    # re-navigates to a clean copy of its page before acting, rather than
+    # reusing whatever state a previous probe left behind, so a messy
+    # result on one field/payload can't bleed into the next. None of them
+    # touch route_intercept_and_modify, _blacklisted_refs, or any Explorer
+    # state — Phase 4 only ever reads explorer.page_inputs, never writes
+    # back to it, so it can't disturb Phase 1-3's already-working behaviour.
+
+    async def _test_xss(
+        self, browser: PlaywrightMCPClient, page_url: str, ref: str, label: str,
+    ) -> Optional[Vulnerability]:
+        try:
+            await browser.navigate(page_url)
+            await browser.wait_for_load()
+
+            payload, marker = make_xss_payload()
+            await browser.type_text(ref, payload, label, submit=True)
+            await browser.wait_for_load(timeout_ms=2000)
+
+            if not await check_xss_reflected(browser, marker):
+                return None
+
+            network_requests = await browser.get_network_requests()
+            return Vulnerability(
+                vuln_type="XSS",
+                cwe_id="CWE-79",
+                endpoint=page_url,
+                description=f"Unescaped HTML injection reflected via {label or ref!r}",
+                severity="HIGH",
+                confidence=0.9,
+                original_payload={"field": label or ref, "value": ""},
+                malicious_payload={"field": label or ref, "value": payload},
+                field_changed=label or ref,
+                evidence=(
+                    f"Injected marker {marker!r} exists as a live DOM "
+                    f"attribute after submission — the payload was parsed "
+                    f"as markup, not rendered as escaped text."
+                ),
+                reasoning=(
+                    "document.querySelector found the canary element; a "
+                    "correctly-escaping app would never expose it as a "
+                    "real attribute."
+                ),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                http_chain=self._http_chain_from(network_requests),
+            )
+        except Exception as exc:
+            logger.error("XSS probe error on %s (ref=%s): %s", page_url, ref, exc)
+            return None
+
+    async def _test_sql_error(
+        self, browser: PlaywrightMCPClient, page_url: str, ref: str, label: str,
+    ) -> Optional[Vulnerability]:
+        try:
+            await browser.navigate(page_url)
+            await browser.wait_for_load()
+
+            await browser.type_text(ref, SQLI_ERROR_PROBE_PAYLOAD, label, submit=True)
+            await browser.wait_for_load(timeout_ms=2000)
+
+            network_requests = await browser.get_network_requests()
+            signature = check_sql_error_signature(network_requests)
+            if not signature:
+                return None
+
+            return Vulnerability(
+                vuln_type="SQLI",
+                cwe_id="CWE-89",
+                endpoint=page_url,
+                description=f"Unhandled SQL error from a single quote in {label or ref!r}",
+                severity="CRITICAL",
+                confidence=0.85,
+                original_payload={"field": label or ref, "value": ""},
+                malicious_payload={"field": label or ref, "value": SQLI_ERROR_PROBE_PAYLOAD},
+                field_changed=label or ref,
+                evidence=f"Response contains a raw database error: {signature!r}",
+                reasoning=(
+                    "A single unescaped quote broke the underlying SQL "
+                    "query and the resulting driver/ORM error reached the "
+                    "client — this input is reaching the database without "
+                    "parameterisation."
+                ),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                http_chain=self._http_chain_from(network_requests),
+            )
+        except Exception as exc:
+            logger.error("SQLi error-probe failed on %s (ref=%s): %s", page_url, ref, exc)
+            return None
+
+    async def _test_sql_auth_bypass(
+        self,
+        browser: PlaywrightMCPClient,
+        page_url: str,
+        login_field: dict,
+        password_field: Optional[dict],
+    ) -> Optional[Vulnerability]:
+        try:
+            await browser.navigate(page_url)
+            await browser.wait_for_load()
+
+            # Fill a dummy password alongside the payload where one exists:
+            # the classic ' OR 1=1-- bypass only works because it comments
+            # out the rest of the WHERE clause, so a password field left
+            # empty could fail client-side validation before the request
+            # ever fires at all, for reasons unrelated to the actual check.
+            if password_field and password_field.get("ref"):
+                await browser.type_text(
+                    password_field["ref"], "irrelevant-value",
+                    password_field.get("label", ""),
+                )
+
+            await browser.type_text(
+                login_field["ref"], SQLI_AUTH_BYPASS_PAYLOAD,
+                login_field.get("label", ""), submit=True,
+            )
+            await browser.wait_for_load(timeout_ms=2000)
+
+            network_requests = await browser.get_network_requests()
+            hit = check_auth_bypass_success(network_requests)
+            if not hit:
+                return None
+
+            return Vulnerability(
+                vuln_type="SQLI",
+                cwe_id="CWE-89",
+                endpoint=page_url,
+                description="Authentication bypassed via SQL injection in login field",
+                severity="CRITICAL",
+                confidence=0.9,
+                original_payload={"field": login_field.get("label", ""), "value": ""},
+                malicious_payload={
+                    "field": login_field.get("label", ""),
+                    "value": SQLI_AUTH_BYPASS_PAYLOAD,
+                },
+                field_changed=login_field.get("label", "") or login_field.get("ref", ""),
+                evidence=(
+                    f"Login POST to {hit.get('url', '')} returned 200 with "
+                    f"an issued auth token despite a payload that was "
+                    f"never a valid password."
+                ),
+                reasoning=(
+                    "The ' OR 1=1-- payload comments out the rest of the "
+                    "SQL WHERE clause, so the password check never "
+                    "actually runs — any value in the password field is "
+                    "accepted."
+                ),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                http_chain=self._http_chain_from(network_requests),
+            )
+        except Exception as exc:
+            logger.error("SQLi auth-bypass probe failed on %s: %s", page_url, exc)
+            return None
+
+    @staticmethod
+    def _http_chain_from(network_requests: list[dict]) -> List[HttpRecord]:
+        return [
+            HttpRecord(
+                url=r.get("url", ""),
+                method=r.get("method", ""),
+                request_body=RedTeamOrchestrator._parse_body(r.get("requestBody")),
+                status=r.get("status", 0),
+                response_body=str(r.get("responseBody", ""))[:500],
+            )
+            for r in network_requests[-3:]
+        ]
 
     # ── Reporting ─────────────────────────────────────────────────────────────
 
