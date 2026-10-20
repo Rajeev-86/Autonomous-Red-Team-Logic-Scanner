@@ -58,6 +58,11 @@ class Config:
     MAX_ATTACK_ATTEMPTS:   int   = 25
     SIMILARITY_THRESHOLD:  float = 0.72   # cosine sim threshold for vector recall
 
+    # Phase 4 — XSS / SQLi injection testing. Bounds total round trips:
+    # MAX_INJECTION_PAGES * MAX_FIELDS_PER_PAGE * 2 probes/field, roughly.
+    MAX_INJECTION_PAGES:     int = 10
+    MAX_FIELDS_PER_PAGE:     int = 3
+
     # ── Output ────────────────────────────────────────────────────────────────
     REPORT_PATH: str = "./reports/findings.json"
 
