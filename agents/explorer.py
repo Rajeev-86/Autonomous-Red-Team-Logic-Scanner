@@ -123,6 +123,13 @@ class ExplorerAgent(BaseAgent):
         self._last_action_feedback: str = ""       # fed into the next prompt
         self._filled_refs_this_page: set[str] = set()  # 'type' targets on current page
         self._last_url: Optional[str] = None
+        # Every text input seen, grouped by page, for Phase 4 (XSS/SQLi
+        # testing) to use afterwards — independent of vector_store/
+        # state_graph, so it can't interact with or contaminate either.
+        # Keyed by URL; a later (non-empty) capture of the same URL
+        # overwrites the earlier one, so a transient bad extraction on a
+        # repeat visit can't wipe out a previously-good one.
+        self.page_inputs: dict[str, list[dict]] = {}
 
     # ── Main exploration loop ──────────────────────────────────────────────────
 
@@ -172,6 +179,14 @@ class ExplorerAgent(BaseAgent):
 
             # ── Decide next action ─────────────────────────────────────────
             elements = page_data.get("interactive_elements", [])
+
+            text_inputs = [
+                {"ref": e.get("ref"), "label": e.get("label", "")}
+                for e in elements
+                if e.get("type") == "input" and e.get("ref")
+            ]
+            if text_inputs:
+                self.page_inputs[current_url] = text_inputs
             logger.debug(
                 "[Step %d] %d elements extracted: %s",
                 step + 1, len(elements),
